@@ -296,13 +296,13 @@ Scale Set before relying on that routing.
 
 ## Roadmap
 
-- [ ] GitHub App authentication
-- [ ] GitHub Runner Scale Set integration
+- [x] GitHub App authentication
+- [x] GitHub Runner Scale Set integration for job intake
 - [ ] Ephemeral runner lifecycle management
-- [ ] QEMU/KVM backend
+- [ ] QEMU/KVM backend (image boot check implemented; job VM lifecycle pending)
 - [ ] Linux AMD64 runner support
 - [ ] Windows AMD64 runner support
-- [ ] Golden image management
+- [ ] Golden image management (Ubuntu AMD64 preparation and caching implemented; end-to-end boot verification pending)
 - [ ] Copy-on-write VM provisioning
 - [ ] Automatic cleanup and crash recovery
 - [ ] Remote host agents
@@ -310,8 +310,11 @@ Scale Set before relying on that routing.
 - [ ] macOS ARM64 runner support
 - [ ] Linux ARM64 runner support
 - [ ] Multi-host scheduling
-- [ ] Runner pools and configurable concurrency
+- [x] Configurable concurrency for job intake
+- [ ] Runner pools
 - [ ] Optional VM snapshot and restore acceleration
+
+GitHub authentication and job intake still need verification against a live Scale Set.
 
 ## License
 
