@@ -118,4 +118,63 @@ The control plane and host agent are designed to run on the same machine or acro
 
 ### Virtualization Backends
 
-**
+**QEMU/KVM**
+
+Provides Linux and Windows virtual machines, including disk copy-on-write support and cross-architecture emulation.
+
+**Tart**
+
+Provides lightweight macOS and Linux ARM64 virtual machines on Apple Silicon.
+
+The backend architecture is designed to remain extensible as additional virtualization technologies become available.
+
+## Design Philosophy
+
+Ephemera follows a few simple principles:
+
+**Keep it small.** A runner manager should not require an entire infrastructure platform.
+
+**Keep it disposable.** Runner environments are temporary by default.
+
+**Keep it reproducible.** Every job should start from a known, clean image.
+
+**Keep it compatible.** Use existing virtualization tools and GitHub's official APIs instead of reinventing them.
+
+**Keep it yours.** Run your workloads on your own hardware without depending on a third-party compute provider.
+
+## Built On
+
+Ephemera builds upon established open-source technologies:
+
+- [GitHub Actions Runner Scale Set](https://github.com/actions/scaleset) — GitHub Actions runner orchestration and autoscaling APIs.
+- [QEMU](https://github.com/qemu/qemu) — Full-system virtualization and hardware emulation.
+- [Tart](https://github.com/cirruslabs/tart) — macOS and Linux virtualization on Apple Silicon.
+
+## Roadmap
+
+- [ ] GitHub App authentication
+- [ ] GitHub Runner Scale Set integration
+- [ ] Ephemeral runner lifecycle management
+- [ ] QEMU/KVM backend
+- [ ] Linux AMD64 runner support
+- [ ] Windows AMD64 runner support
+- [ ] Golden image management
+- [ ] Copy-on-write VM provisioning
+- [ ] Automatic cleanup and crash recovery
+- [ ] Remote host agents
+- [ ] Tart backend
+- [ ] macOS ARM64 runner support
+- [ ] Linux ARM64 runner support
+- [ ] Multi-host scheduling
+- [ ] Runner pools and configurable concurrency
+- [ ] Optional VM snapshot and restore acceleration
+
+## License
+
+Apache License 2.0.
+
+See [LICENSE](LICENSE) for details.
+
+---
+
+**Ephemera — Run. Finish. Vanish.**
