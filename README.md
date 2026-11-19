@@ -159,7 +159,8 @@ operating systems other than Debian.**
 downloads the release for your architecture, checks its SHA-256 digest,
 and opens the setup wizard on first install. The wizard asks for your
 GitHub repository or organization URL, scale set name, GitHub App and
-installation IDs, private key file, runner image, and concurrency limit.
+installation IDs, private key file, and concurrency limit. The wizard
+selects the currently implemented runner image, Ubuntu amd64.
 You can optionally pin the release with `--version TAG`.
 
 ```bash
@@ -188,6 +189,12 @@ with the Debian smoke test below.
 
 ## Development
 
+Run `make` for the target list. `make build` builds the local CLI,
+`make build-linux` builds a Linux amd64 binary, and `make check` runs
+Go tests, vet, shell syntax checks, ShellCheck, and configuration
+validation. Use `make config-check CONFIG=/path/to/config.yaml` to
+validate a specific file.
+
 The [example configuration](configs/ephemera.example.yaml) describes the
 intended Linux service layout. The service will read
 `/etc/ephemera/config.yaml` by default, store persistent state under
@@ -202,21 +209,90 @@ OpenSSH client. HTTPS downloads also require curl. Use a versioned
 and the matching SHA-512 from its checksum file.
 
 ```bash
-./scripts/dev-vm.sh --image "$DEBIAN_IMAGE" --sha512 "$DEBIAN_SHA512"
+make vm-boot DEBIAN_IMAGE="$DEBIAN_IMAGE" DEBIAN_SHA512="$DEBIAN_SHA512"
+make vm-test DEBIAN_IMAGE="$DEBIAN_IMAGE" DEBIAN_SHA512="$DEBIAN_SHA512"
+make vm-debug DEBIAN_IMAGE="$DEBIAN_IMAGE" DEBIAN_SHA512="$DEBIAN_SHA512"
 ```
 
 `DEBIAN_IMAGE` can be a local path or an HTTPS URL. The script caches the
 verified base image and creates a fresh writable disk and SSH key per run.
 It checks Debian boot, cloud-init, SSH, and systemd. On hosts without usable
 x86-64 KVM, QEMU uses software emulation. Pass `--keep` to retain the VM
-for debugging.
+for debugging, or use `make vm-debug` to run the installer smoke test and
+print the SSH command for the retained VM.
 
-Pass `--installer-smoke` to build the local setup CLI and exercise the
+`make vm-test` builds the local setup CLI and exercises the
 installer with a systemd fixture unit. The test generates a disposable
 RSA key, installs twice, checks that the config and key are preserved,
 and verifies that systemd can restart the unit. For an externally
 built bundle, pass `--bundle DIR` containing a Linux amd64 `ephemera`
 binary, a test `ephemera.service`, and a secret-free `config.yaml`.
+
+### Test GitHub job intake
+
+Install a GitHub App with access to a dedicated test repository and
+populate the GitHub fields in a copy of the example configuration.
+Build the CLI and start an observation session against that Scale Set:
+
+```bash
+make build
+bin/ephemera orders listen --config ./test-config.yaml \
+  --github-app-key /path/to/github-app.pem --create
+```
+
+`--create` registers the configured Scale Set in the default runner group
+if it is missing. Later runs can reuse it. The listener uses outbound HTTPS
+and stops on Ctrl+C. Observation advertises zero runner capacity and leaves
+job offers unclaimed. Add `--claim` only for a dedicated test Scale Set with
+`runner.max_concurrent: 1`. Trigger a workflow whose `runs-on` matches
+`github.scale_set_name` and look for `Job acquired` and `Runner demand` in the
+logs. Cancel the test workflow after confirming the intake because this
+command has no runner backend.
+
+### Runner images and readiness
+
+Set `vm.image` to `ubuntu` or `windows`, and `vm.arch` to `amd64` or
+`arm64`. The first implemented recipe is `ubuntu/amd64`. The remaining
+combinations are recognized and stop startup with an explicit error until
+their build and boot recipes are available. For older configs, add
+`arch: amd64` and replace the old image ID with `ubuntu` to use the
+managed image.
+
+The recipe uses pinned Ubuntu 24.04 and GitHub runner releases. Override
+both source pins under `images.ubuntu.amd64` with `base_url`,
+`base_sha256`, `runner_version`, and `runner_sha256`. The image tag and
+the Scale Set name can stay the same after a source update.
+
+On a Debian amd64 host, install the build tools, then prepare and test
+the image independently of GitHub:
+
+```bash
+sudo apt install qemu-system-x86 qemu-utils guestfs-tools cloud-image-utils
+make image-prepare
+```
+
+The preparation step verifies both downloads, assembles a standalone
+qcow2, and boots a disposable overlay to check the runner binary and
+systemd unit. Each job VM will start the guest unit after receiving its
+one-time JIT config at `/run/ephemera/jitconfig`. The listener caches validated disks under
+`/var/lib/ephemera/images`. The Make target uses `bin/images` for local
+development. Override its directory with `IMAGE_CACHE=/path/to/cache`.
+
+`orders listen` prepares the selected image before opening the GitHub
+session. It reports `Healthy` after reading the initial session
+statistics and checking that the disk is available. Under a systemd
+`Type=notify` service it also sends `READY=1` at that point. Allow more
+than the 30-minute image preparation deadline in `TimeoutStartSec`. A failed
+build or a missing cached disk reports `Degraded` and stops the listener
+so a service supervisor can restart it. The `--claim` option still
+requires an isolated test Scale Set.
+
+The default Scale Set name is `ephemera-ubuntu-amd64`. GitHub documents
+multiple labels for Scale Sets and separately calls out that ARC does
+not support the standard `self-hosted` label. Existing
+`runs-on: self-hosted` workflows should be tested against Ephemera's
+Scale Set before relying on that routing.
+[GitHub runner selection documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job)
 
 ## Roadmap
 

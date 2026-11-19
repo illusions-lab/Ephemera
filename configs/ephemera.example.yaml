@@ -6,7 +6,7 @@ version: 1
 
 github:
   scope_url: https://github.com/example-org/ephemera-test
-  scale_set_name: ephemera-linux
+  scale_set_name: ephemera-ubuntu-amd64
   app_id: 123456
   installation_id: 789012
 
@@ -17,6 +17,17 @@ runner:
 
 vm:
   backend: qemu
-  image: debian-runner-v1
+  image: ubuntu
+  arch: amd64
   vcpus: 2
   memory_mib: 4096
+
+# The built-in Ubuntu amd64 recipe uses pinned upstream releases.
+# To select different sources, add:
+# images:
+#   ubuntu:
+#     amd64:
+#       base_url: https://example.org/pinned-ubuntu-cloud-image.img
+#       base_sha256: "<SHA-256 of the base disk>"
+#       runner_version: "<GitHub Actions runner release version>"
+#       runner_sha256: "<SHA-256 of the Linux x64 runner archive>"

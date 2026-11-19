@@ -18,6 +18,7 @@ import (
 
 	"charm.land/huh/v2"
 	"github.com/charmbracelet/x/term"
+	"github.com/illusions-lab/Ephemera/internal/images"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -39,9 +40,11 @@ type config struct {
 	VM struct {
 		Backend   string
 		Image     string
+		Arch      string `yaml:"arch,omitempty"`
 		VCPUs     int
 		MemoryMiB int `yaml:"memory_mib"`
 	}
+	Images map[string]map[string]images.Source `yaml:"images,omitempty"`
 }
 
 func main() {
@@ -55,6 +58,10 @@ func run(args []string) error {
 	switch {
 	case len(args) >= 1 && args[0] == "setup":
 		return setup(args[1:])
+	case len(args) >= 2 && args[0] == "orders" && args[1] == "listen":
+		return listenOrders(args[2:])
+	case len(args) >= 2 && args[0] == "images" && args[1] == "prepare":
+		return prepareImage(args[2:])
 	case len(args) >= 2 && args[0] == "config" && args[1] == "validate":
 		flags := flag.NewFlagSet("config validate", flag.ContinueOnError)
 		path := flags.String("config", filepath.Join(configDir, "config.yaml"), "configuration file")
@@ -67,7 +74,7 @@ func run(args []string) error {
 		_, err := loadConfig(*path)
 		return err
 	default:
-		return errors.New("usage: ephemera setup | ephemera config validate [--config PATH]")
+		return errors.New("usage: ephemera setup | ephemera config validate | ephemera images prepare | ephemera orders listen")
 	}
 }
 
@@ -119,6 +126,22 @@ func (cfg config) validate() error {
 	}
 	if err := validateScope(cfg.GitHub.ScopeURL); err != nil {
 		return fmt.Errorf("github.scope_url: %w", err)
+	}
+	if cfg.VM.Arch != "" || cfg.VM.Image == "ubuntu" || cfg.VM.Image == "windows" || len(cfg.Images) > 0 {
+		if err := (images.Platform{Tag: cfg.VM.Image, Arch: cfg.VM.Arch}).Validate(); err != nil {
+			return fmt.Errorf("vm.image / vm.arch: %w", err)
+		}
+	}
+	for tag, architectures := range cfg.Images {
+		for arch, source := range architectures {
+			platform := images.Platform{Tag: tag, Arch: arch}
+			if err := platform.Validate(); err != nil {
+				return fmt.Errorf("images.%s.%s: %w", tag, arch, err)
+			}
+			if err := source.Validate(); err != nil {
+				return fmt.Errorf("images.%s.%s: %w", tag, arch, err)
+			}
+		}
 	}
 	return nil
 }
@@ -187,14 +210,9 @@ func promptConfig() (config, string, error) {
 	cfg.VM.Backend = "qemu"
 	cfg.VM.VCPUs = 2
 	cfg.VM.MemoryMiB = 4096
-	name, concurrent := "ephemera-linux", "2"
-	var scope, app, installation, key, image string
-	required := func(value string) error {
-		if strings.TrimSpace(value) == "" {
-			return errors.New("enter a value")
-		}
-		return nil
-	}
+	cfg.VM.Image, cfg.VM.Arch = "ubuntu", "amd64"
+	name, concurrent := "ephemera-ubuntu-amd64", "2"
+	var scope, app, installation, key string
 	positive := func(value string) error {
 		n, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil || n <= 0 {
@@ -205,7 +223,7 @@ func promptConfig() (config, string, error) {
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().Title("GitHub repository or organization URL").Value(&scope).Validate(validateScope),
-			huh.NewInput().Title("Runner Scale Set name").Value(&name).Validate(required),
+			huh.NewInput().Title("Runner Scale Set name").Value(&name),
 			huh.NewInput().Title("GitHub App ID").Value(&app).Validate(positive),
 			huh.NewInput().Title("GitHub App Installation ID").Value(&installation).Validate(positive),
 			huh.NewInput().Title("Path to the GitHub App private key (.pem)").Value(&key).Validate(func(path string) error {
@@ -214,7 +232,6 @@ func promptConfig() (config, string, error) {
 			}),
 		),
 		huh.NewGroup(
-			huh.NewInput().Title("Runner VM image path or ID").Value(&image).Validate(required),
 			huh.NewInput().Title("Maximum concurrent runners").Value(&concurrent).Validate(positive),
 		),
 	)
@@ -226,7 +243,6 @@ func promptConfig() (config, string, error) {
 	cfg.GitHub.AppID, _ = strconv.ParseInt(strings.TrimSpace(app), 10, 64)
 	cfg.GitHub.InstallationID, _ = strconv.ParseInt(strings.TrimSpace(installation), 10, 64)
 	cfg.Runner.MaxConcurrent, _ = strconv.Atoi(strings.TrimSpace(concurrent))
-	cfg.VM.Image = strings.TrimSpace(image)
 	return cfg, strings.TrimSpace(key), cfg.validate()
 }
 
