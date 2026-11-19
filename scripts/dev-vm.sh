@@ -3,14 +3,16 @@ set -euo pipefail
 
 usage() {
   cat <<'HELP'
-Usage: scripts/dev-vm.sh --image PATH_OR_HTTPS_URL --sha512 DIGEST [--bundle DIR] [--keep]
+Usage: scripts/dev-vm.sh --image PATH_OR_HTTPS_URL --sha512 DIGEST
+                         [--bundle DIR | --installer-smoke] [--keep]
 
 Boot a fresh Debian amd64 cloud VM and verify cloud-init, SSH and systemd.
 Use a versioned genericcloud qcow2 image and its published SHA-512 digest.
 
 --bundle DIR  Install ephemera, ephemera.service and config.yaml from DIR.
-              Validate the config, then start and restart the service.
+              Exercise install.sh twice, then restart the service.
               Use a Linux amd64 binary and a secret-free test configuration.
+--installer-smoke  Build the local CLI and test installation with a fixture unit.
 --keep        Leave the VM running and print login and cleanup commands.
 HELP
 }
@@ -23,6 +25,7 @@ die() {
 image=
 digest=
 bundle=
+installer_smoke=false
 keep=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -35,6 +38,7 @@ while [[ $# -gt 0 ]]; do
       esac
       shift 2
       ;;
+    --installer-smoke) installer_smoke=true; shift ;;
     --keep) keep=true; shift ;;
     --help|-h) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
@@ -43,6 +47,10 @@ done
 
 [[ -n "$image" ]] || die '--image is required'
 [[ "$digest" =~ ^[[:xdigit:]]{128}$ ]] || die '--sha512 requires a 128-character hex digest'
+if "$installer_smoke"; then
+  [[ -z "$bundle" ]] || die 'choose either --bundle or --installer-smoke'
+  command -v go >/dev/null || die 'required command missing: go'
+fi
 if [[ -n "$bundle" ]]; then
   bundle=$(cd -- "$bundle" && pwd) || die 'cannot open bundle directory'
   for artifact in ephemera ephemera.service config.yaml; do
@@ -102,6 +110,31 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+if "$installer_smoke"; then
+  bundle="$work_dir/bundle"
+  mkdir "$bundle"
+  (
+    cd "$script_dir/.."
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$bundle/ephemera" ./cmd/ephemera
+    cp configs/ephemera.example.yaml "$bundle/config.yaml"
+  )
+  cat > "$bundle/ephemera.service" <<'UNIT'
+[Unit]
+Description=Ephemera installer smoke test
+
+[Service]
+Type=oneshot
+LoadCredential=github-app-key:/etc/ephemera/credentials/github-app.pem
+ExecStartPre=/usr/bin/test -s %d/github-app-key
+ExecStart=/usr/local/bin/ephemera config validate
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+fi
 
 digest=$(printf '%s' "$digest" | tr '[:upper:]' '[:lower:]')
 base_image="$cache_root/$digest.qcow2"
@@ -193,15 +226,19 @@ GUEST
 
 if [[ -n "$bundle" ]]; then
   command -v scp >/dev/null || die 'required command missing: scp'
+  # This per-run RSA key checks credential installation without GitHub access.
+  ssh-keygen -q -t rsa -b 2048 -m PEM -N '' -f "$work_dir/test-github-app.pem"
   scp -P "$port" "${ssh_options[@]}" \
-    "$bundle/ephemera" "$bundle/ephemera.service" "$bundle/config.yaml" "$guest:"
+    "$bundle/ephemera" "$bundle/ephemera.service" "$bundle/config.yaml" \
+    "$work_dir/test-github-app.pem" "$script_dir/install.sh" "$guest:"
   run_guest 'sudo bash -se' <<'GUEST'
-install -D -m 0755 ephemera /usr/local/bin/ephemera
-install -D -m 0644 ephemera.service /etc/systemd/system/ephemera.service
-install -D -m 0644 config.yaml /etc/ephemera/config.yaml
-timeout 30 /usr/local/bin/ephemera config validate
-systemctl daemon-reload
-timeout 60 systemctl start ephemera
+timeout 120 bash install.sh --bundle . --non-interactive \
+  --config config.yaml --github-app-key test-github-app.pem
+before=$(sha256sum /etc/ephemera/config.yaml /etc/ephemera/credentials/github-app.pem)
+timeout 120 bash install.sh --bundle . --non-interactive
+test "$before" = "$(sha256sum /etc/ephemera/config.yaml /etc/ephemera/credentials/github-app.pem)"
+test "$(stat -c '%u:%a' /etc/ephemera/credentials/github-app.pem)" = 0:600
+systemctl is-enabled ephemera
 systemctl is-active ephemera
 timeout 60 systemctl restart ephemera
 systemctl is-active ephemera

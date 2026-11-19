@@ -150,6 +150,42 @@ Ephemera builds upon established open-source technologies:
 - [QEMU](https://github.com/qemu/qemu) — Full-system virtualization and hardware emulation.
 - [Tart](https://github.com/cirruslabs/tart) — macOS and Linux virtualization on Apple Silicon.
 
+## Installation
+
+**We recommend Debian with systemd. We have not tested installation on
+operating systems other than Debian.**
+
+`scripts/install.sh` is the one-command installation entry point. It
+downloads the release for your architecture, checks its SHA-256 digest,
+and opens the setup wizard on first install. The wizard asks for your
+GitHub repository or organization URL, scale set name, GitHub App and
+installation IDs, private key file, runner image, and concurrency limit.
+You can optionally pin the release with `--version TAG`.
+
+```bash
+sudo bash scripts/install.sh
+```
+
+For automated deployment, supply your own configuration and private key.
+Use `--bundle DIR` to install an unpacked release instead of downloading it.
+
+```bash
+sudo bash scripts/install.sh --non-interactive \
+  --config /path/to/config.yaml --github-app-key /path/to/github-app.pem
+```
+
+Repeat installs reuse the installed configuration and credential. They
+restart the service, so schedule upgrades between jobs. To change settings,
+edit `/etc/ephemera/config.yaml` and run `ephemera config validate` before
+restarting the service.
+
+Release installation will be available once the control-plane daemon and
+its production unit are published. The installer expects a GitHub Actions
+release containing `checksums.txt` and an
+`ephemera_linux_<arch>.tar.gz` with `ephemera` and `ephemera.service` at
+its root. The setup CLI and installer can already be exercised locally
+with the Debian smoke test below.
+
 ## Development
 
 The [example configuration](configs/ephemera.example.yaml) describes the
@@ -175,11 +211,12 @@ It checks Debian boot, cloud-init, SSH, and systemd. On hosts without usable
 x86-64 KVM, QEMU uses software emulation. Pass `--keep` to retain the VM
 for debugging.
 
-Pass `--bundle /path/to/bundle` to also test installing the Linux amd64
-`ephemera` binary, `ephemera.service`, and a secret-free test `config.yaml`.
-The script installs those files, validates the configuration, and checks
-that the service starts and restarts. The repository does not yet build
-these artifacts.
+Pass `--installer-smoke` to build the local setup CLI and exercise the
+installer with a systemd fixture unit. The test generates a disposable
+RSA key, installs twice, checks that the config and key are preserved,
+and verifies that systemd can restart the unit. For an externally
+built bundle, pass `--bundle DIR` containing a Linux amd64 `ephemera`
+binary, a test `ephemera.service`, and a secret-free `config.yaml`.
 
 ## Roadmap
 
