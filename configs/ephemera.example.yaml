@@ -1,0 +1,22 @@
+# Copy to /etc/ephemera/config.yaml and replace the example values.
+# The systemd service loads the GitHub App private key as the
+# github-app-key credential from /etc/ephemera/credentials/github-app.pem.
+# Persistent service state belongs in /var/lib/ephemera.
+version: 1
+
+github:
+  scope_url: https://github.com/example-org/ephemera-test
+  scale_set_name: ephemera-linux
+  app_id: 123456
+  installation_id: 789012
+
+runner:
+  max_concurrent: 2
+  startup_timeout: 3m
+  idle_timeout: 5m
+
+vm:
+  backend: qemu
+  image: debian-runner-v1
+  vcpus: 2
+  memory_mib: 4096

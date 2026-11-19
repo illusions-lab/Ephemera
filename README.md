@@ -150,6 +150,37 @@ Ephemera builds upon established open-source technologies:
 - [QEMU](https://github.com/qemu/qemu) — Full-system virtualization and hardware emulation.
 - [Tart](https://github.com/cirruslabs/tart) — macOS and Linux virtualization on Apple Silicon.
 
+## Development
+
+The [example configuration](configs/ephemera.example.yaml) describes the
+intended Linux service layout. The service will read
+`/etc/ephemera/config.yaml` by default, store persistent state under
+`/var/lib/ephemera`, and write logs to the systemd journal. Keep the GitHub App
+key in `/etc/ephemera/credentials/github-app.pem` with root-only access for
+systemd to load.
+
+The Debian smoke test requires `qemu-system-x86_64`, `qemu-img`,
+`cloud-localds` (from `cloud-image-utils` on Debian), Python 3, and the
+OpenSSH client. HTTPS downloads also require curl. Use a versioned
+[Debian genericcloud amd64 qcow2 image](https://cloud.debian.org/images/cloud/)
+and the matching SHA-512 from its checksum file.
+
+```bash
+./scripts/dev-vm.sh --image "$DEBIAN_IMAGE" --sha512 "$DEBIAN_SHA512"
+```
+
+`DEBIAN_IMAGE` can be a local path or an HTTPS URL. The script caches the
+verified base image and creates a fresh writable disk and SSH key per run.
+It checks Debian boot, cloud-init, SSH, and systemd. On hosts without usable
+x86-64 KVM, QEMU uses software emulation. Pass `--keep` to retain the VM
+for debugging.
+
+Pass `--bundle /path/to/bundle` to also test installing the Linux amd64
+`ephemera` binary, `ephemera.service`, and a secret-free test `config.yaml`.
+The script installs those files, validates the configuration, and checks
+that the service starts and restarts. The repository does not yet build
+these artifacts.
+
 ## Roadmap
 
 - [ ] GitHub App authentication
