@@ -170,6 +170,10 @@ if [[ ! -L "$current" && -f /usr/local/bin/ephemera && ! -L /usr/local/bin/ephem
   [[ ! -f "$unit" ]] || cp "$unit" "$legacy/ephemera.service"
   atomic_link "$legacy" "$current"
 fi
+getent group kvm >/dev/null || groupadd --system kvm
+if ! id ephemera >/dev/null 2>&1; then
+  useradd --system --user-group --home-dir /var/lib/ephemera --shell /usr/sbin/nologin ephemera
+fi
 mkdir "$temp/transaction"
 [[ ! -L "$current" ]] || readlink "$current" > "$temp/transaction/previous"
 [[ ! -f "$unit" ]] || cp "$unit" "$temp/transaction/unit"

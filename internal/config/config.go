@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -29,6 +30,7 @@ type Config struct {
 		InstallationID int64  `yaml:"installation_id"`
 	}
 	Runner struct {
+		Execute        bool          `yaml:"execute,omitempty"`
 		MaxConcurrent  int           `yaml:"max_concurrent"`
 		StartupTimeout time.Duration `yaml:"startup_timeout"`
 		IdleTimeout    time.Duration `yaml:"idle_timeout"`
@@ -92,10 +94,12 @@ func (cfg Config) Validate() error {
 		return errors.New("github.scale_set_name is required")
 	case cfg.GitHub.AppID <= 0 || cfg.GitHub.InstallationID <= 0:
 		return errors.New("github.app_id and github.installation_id must be positive")
-	case cfg.Runner.MaxConcurrent <= 0:
-		return errors.New("runner.max_concurrent must be positive")
+	case cfg.Runner.MaxConcurrent <= 0 || cfg.Runner.MaxConcurrent > math.MaxInt32:
+		return errors.New("runner.max_concurrent must be between 1 and 2147483647")
 	case cfg.Runner.StartupTimeout <= 0 || cfg.Runner.IdleTimeout <= 0:
 		return errors.New("runner.startup_timeout and runner.idle_timeout must be positive")
+	case cfg.Runner.Execute && (cfg.VM.Image != "ubuntu" || cfg.VM.Arch != "amd64"):
+		return errors.New("execution requires the Ubuntu amd64 guest")
 	case cfg.VM.Backend != "qemu":
 		return errors.New("vm.backend must be qemu")
 	case strings.TrimSpace(cfg.VM.Image) == "" || cfg.VM.VCPUs <= 0 || cfg.VM.MemoryMiB <= 0:

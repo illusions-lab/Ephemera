@@ -31,6 +31,8 @@ func run(args []string) error {
 	flags := flag.NewFlagSet("ephemerad", flag.ContinueOnError)
 	path := flags.String("config", filepath.Join(config.Dir, "config.yaml"), "configuration file")
 	cacheDir := flags.String("image-cache", image.DefaultCache, "image cache directory")
+	stateDir := flags.String("state-dir", service.DefaultStateDir, "private runner instance directory")
+	statusSocket := flags.String("status-socket", "", "Unix socket path for the read-only status endpoint")
 	keyPath := flags.String("github-app-key", "", "override the GitHub App PEM path")
 	create := flags.Bool("create", false, "create the configured Scale Set if absent")
 	claim := flags.Bool("claim", false, "acquire jobs for a test Scale Set; this command does not launch runners")
@@ -46,5 +48,5 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	return service.Run(ctx, service.Options{ConfigPath: *path, CacheDir: *cacheDir, KeyPath: *keyPath, Create: *create, Claim: *claim}, logger)
+	return service.Run(ctx, service.Options{ConfigPath: *path, CacheDir: *cacheDir, KeyPath: *keyPath, StatusSocket: *statusSocket, StateDir: *stateDir, Create: *create, Claim: *claim}, logger)
 }

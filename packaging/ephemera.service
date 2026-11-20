@@ -6,11 +6,19 @@ ConditionPathExists=/etc/ephemera/config.yaml
 
 [Service]
 Type=notify
-ExecStart=/usr/local/bin/ephemerad --create
+User=ephemera
+Group=ephemera
+SupplementaryGroups=kvm
+UMask=0077
+KillMode=mixed
+ExecStart=/usr/local/bin/ephemerad --create --status-socket=/run/ephemera/status.sock
+RuntimeDirectory=ephemera
+RuntimeDirectoryMode=0755
 LoadCredential=github-app-key:/etc/ephemera/credentials/github-app.pem
 StateDirectory=ephemera
+StateDirectoryMode=0700
 TimeoutStartSec=40min
-TimeoutStopSec=30s
+TimeoutStopSec=60s
 Restart=on-failure
 RestartSec=15s
 

@@ -22,6 +22,8 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=github.com \
   -keyout "$work/tls.key" -out "$work/tls.pem"
 # The daemon uses a scoped CA bundle. Ordinary CI tools keep their normal trust.
 cat /etc/ssl/certs/ca-certificates.crt "$work/tls.pem" > "$work/ca.pem"
+chmod 0755 "$work"
+chmod 0644 "$work/ca.pem"
 sudo mkdir -p /etc/systemd/system/ephemera.service.d
 printf '[Service]\nEnvironment=SSL_CERT_FILE=%s\n' "$work/ca.pem" |
   sudo tee /etc/systemd/system/ephemera.service.d/ci.conf >/dev/null

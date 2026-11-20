@@ -30,6 +30,10 @@ func Run(args []string) error {
 		cmd.Stderr = os.Stderr
 		cmd.Stdin = os.Stdin
 		return cmd.Run()
+	case args[0] == "status":
+		return runStatus(args[1:])
+	case args[0] == "doctor":
+		return runDoctor(args[1:])
 	case len(args) >= 1 && args[0] == "setup":
 		return runSetup(args[1:])
 	case len(args) >= 2 && args[0] == "image" && args[1] == "prepare":

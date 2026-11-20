@@ -11,6 +11,7 @@ github:
   installation_id: 789012
 
 runner:
+  execute: false # Set true on a Linux amd64/KVM execution host.
   max_concurrent: 2
   startup_timeout: 3m
   idle_timeout: 5m

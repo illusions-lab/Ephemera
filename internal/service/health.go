@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-func reportHealth(logger *slog.Logger, state string) error {
+func reportHealth(logger *slog.Logger, state, failedPhase string) error {
 	if socket := os.Getenv("NOTIFY_SOCKET"); socket != "" {
 		conn, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: socket, Net: "unixgram"})
 		if err != nil {
@@ -15,6 +15,9 @@ func reportHealth(logger *slog.Logger, state string) error {
 		}
 		defer conn.Close()
 		message := "STATUS=" + state
+		if failedPhase != "" {
+			message += " during " + failedPhase
+		}
 		switch state {
 		case "Healthy":
 			message += "\nREADY=1"
