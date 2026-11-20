@@ -2,6 +2,7 @@
 import base64
 import json
 import pathlib
+import shutil
 import ssl
 import sys
 import time
@@ -27,7 +28,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(201, {"token": "fixture", "expires_at": "2099-01-01T00:00:00Z"})
         if path == "/actions/runner-registration":
             claims = base64.urlsafe_b64encode(json.dumps({"exp": int(time.time()) + 3600}).encode())
-            return self.reply(200, {"url": "https://api.github.com", "token": "e30." + claims.decode().rstrip("=") + ".eA"})
+            header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}')
+            token = ".".join((header.decode().rstrip("="), claims.decode().rstrip("="), "eA"))
+            return self.reply(200, {"url": "https://api.github.com", "token": token})
         if path.endswith("/sessions"):
             return self.reply(200, {
                 "sessionId": "12345678-1234-1234-1234-123456789abc",
@@ -61,7 +64,6 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_response(200)
                     self.end_headers()
                     with asset.open("rb") as source:
-                        import shutil
                         shutil.copyfileobj(source, self.wfile)
                     return
         self.reply(404)
