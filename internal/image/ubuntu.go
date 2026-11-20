@@ -62,19 +62,46 @@ func Prepare(ctx context.Context, root string, cfg Config, logger *slog.Logger) 
 			return nil
 		}},
 	}
-	recipe, err := json.Marshal(cfg)
+	key, err := imageCacheKey(cfg)
 	if err != nil {
 		return Image{}, err
 	}
-	// Recipe revisions also cover changes to commands and dependency setup.
-	hash := sha256.New()
-	io.WriteString(hash, "ubuntu-image-recipe-v2\x00")
-	hash.Write(recipe)
-	io.WriteString(hash, runnerUnit+runnerLauncher+bootConfig)
-	key := cfg.Platform.Tag + "-" + cfg.Platform.Arch + "-" + hex.EncodeToString(hash.Sum(nil))
 	return c.prepare(ctx, key, func(ctx context.Context, work string) error {
 		return c.buildUbuntu(ctx, work, cfg)
 	})
+}
+
+// CheckCached verifies the cache entry for the current recipe without building
+// an image or writing to the cache.
+func CheckCached(ctx context.Context, root string, cfg Config) (Image, error) {
+	if err := cfg.Platform.Validate(); err != nil {
+		return Image{}, err
+	}
+	if !supports(cfg.Platform) {
+		return Image{}, fmt.Errorf("no verified image recipe for %s", cfg.Platform)
+	}
+	if err := cfg.Source.Validate(); err != nil {
+		return Image{}, err
+	}
+	cfg.Source = cfg.Source.normalized()
+	key, err := imageCacheKey(cfg)
+	if err != nil {
+		return Image{}, err
+	}
+	return verifiedImage(ctx, filepath.Join(root, key))
+}
+
+func imageCacheKey(cfg Config) (string, error) {
+	recipe, err := json.Marshal(cfg)
+	if err != nil {
+		return "", err
+	}
+	// Recipe revisions also cover changes to commands and dependency setup.
+	hash := sha256.New()
+	io.WriteString(hash, "ubuntu-image-recipe-v4\x00")
+	hash.Write(recipe)
+	io.WriteString(hash, runnerUnit+runnerLauncher+bootConfig+RunnerCloudConfig(""))
+	return cfg.Platform.Tag + "-" + cfg.Platform.Arch + "-" + hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 const runnerUnit = `[Unit]
@@ -88,21 +115,53 @@ User=ephemera-runner
 WorkingDirectory=/opt/actions-runner
 LoadCredential=jitconfig:/run/ephemera/jitconfig
 ExecStart=/usr/local/bin/ephemera-runner
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/ttyS1
+ExecStopPost=+/usr/bin/systemctl --no-block poweroff
 `
 
 const runnerLauncher = `#!/bin/sh
 set -eu
 ACTIONS_RUNNER_INPUT_JITCONFIG=$(cat "$CREDENTIALS_DIRECTORY/jitconfig")
+if [ "${EPHEMERA_BOOT_SMOKE:-}" = 1 ]; then
+    test "$ACTIONS_RUNNER_INPUT_JITCONFIG" = ephemera-offline-smoke
+    ./bin/Runner.Listener --version
+    printf '%s\n' '` + bootMarker + `'
+    exit 0
+fi
 export ACTIONS_RUNNER_INPUT_JITCONFIG
-exec ./run.sh
+exec ./bin/Runner.Listener run
 `
 
 const bootMarker = "EPHEMERA_IMAGE_BOOT_VALIDATED"
 
-const bootConfig = `#cloud-config
-runcmd:
-  - [sh, -ec, 'systemd-analyze verify /etc/systemd/system/ephemera-runner.service && runuser -u ephemera-runner -- /opt/actions-runner/bin/Runner.Listener --version && printf "%s\n" ` + bootMarker + ` >/dev/ttyS0 && shutdown -P now']
+// RunnerCloudConfig installs a runtime credential and starts the guest service.
+func RunnerCloudConfig(jit string) string {
+	return runnerCloudConfig(jit, false)
+}
+
+func runnerCloudConfig(jit string, smoke bool) string {
+	config := `#cloud-config
+write_files:
+  - path: /run/ephemera/jitconfig
+    permissions: '0600'
+    content: ` + strconv.Quote(jit) + "\n"
+	if smoke {
+		config += `  - path: /etc/systemd/system/ephemera-runner.service.d/smoke.conf
+    content: |
+      [Service]
+      Environment=EPHEMERA_BOOT_SMOKE=1
 `
+	}
+	return config + `runcmd:
+  - [systemctl, daemon-reload]
+  - [systemctl, start, ephemera-runner.service]
+  - [rm, -f, /run/ephemera/jitconfig]
+`
+}
+
+var bootConfig = runnerCloudConfig("ephemera-offline-smoke", true)
 
 func (c cache) buildUbuntu(ctx context.Context, work string, cfg Config) error {
 	for _, name := range []string{"qemu-img", "virt-resize", "virt-customize", "cloud-localds"} {
@@ -155,7 +214,7 @@ func (c cache) buildUbuntu(ctx context.Context, work string, cfg Config) error {
 		// virt-resize can move the BIOS boot partition, invalidating the
 		// original GRUB core image location recorded in the boot sector.
 		"--run-command", "grub-install --target=i386-pc /dev/sda && update-grub",
-		"--run-command", "cloud-init clean --logs --machine-id"); err != nil {
+		"--run-command", "cloud-init clean --logs --machine-id && touch /etc/machine-id"); err != nil {
 		return err
 	}
 	if err := command(ctx, "qemu-img", "check", "-f", "qcow2", disk); err != nil {
@@ -178,7 +237,7 @@ func bootCheck(ctx context.Context, temp, disk string, cfg Config) error {
 	console := filepath.Join(temp, "console.log")
 	err := command(ctx, "qemu-system-x86_64", "-machine", "accel=kvm:tcg",
 		"-m", strconv.Itoa(cfg.MemoryMiB), "-smp", strconv.Itoa(cfg.VCPUs),
-		"-boot", "order=c", "-display", "none", "-monitor", "none", "-serial", "file:"+console, "-no-reboot",
+		"-boot", "order=c", "-display", "none", "-monitor", "none", "-serial", "null", "-serial", "file:"+console, "-no-reboot",
 		"-nic", "user,restrict=on,model=virtio-net-pci",
 		"-drive", diskOption(overlay)+",format=qcow2,if=virtio",
 		"-drive", diskOption(seed)+",format=raw,if=virtio,readonly=on")
@@ -190,10 +249,7 @@ func bootCheck(ctx context.Context, temp, disk string, cfg Config) error {
 			}
 		}
 	}
-	if len(data) > 4096 {
-		data = data[len(data)-4096:]
-	}
-	return fmt.Errorf("Ubuntu boot check failed: %w\n%s", errors.Join(err, readErr, errors.New("guest did not complete validation")), data)
+	return fmt.Errorf("Ubuntu boot check failed: %w", errors.Join(err, readErr, errors.New("guest did not complete validation")))
 }
 
 func diskOption(path string) string {

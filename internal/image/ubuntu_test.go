@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
+	"slices"
 	"testing"
 
 	"go.yaml.in/yaml/v3"
@@ -29,13 +29,19 @@ done`,
 	}
 	var cloudConfig struct {
 		Commands [][]string `yaml:"runcmd"`
+		Files    []struct {
+			Path, Permissions, Content string
+		} `yaml:"write_files"`
 	}
 	if err := yaml.Unmarshal([]byte(bootConfig), &cloudConfig); err != nil {
 		t.Fatal(err)
 	}
-	if len(cloudConfig.Commands) != 1 || len(cloudConfig.Commands[0]) != 3 ||
-		!strings.Contains(cloudConfig.Commands[0][2], bootMarker) {
-		t.Fatalf("invalid cloud-init command: %v", cloudConfig.Commands)
+	if len(cloudConfig.Files) != 2 || cloudConfig.Files[0].Path != "/run/ephemera/jitconfig" ||
+		cloudConfig.Files[0].Permissions != "0600" || cloudConfig.Files[0].Content != "ephemera-offline-smoke" ||
+		!slices.ContainsFunc(cloudConfig.Commands, func(cmd []string) bool {
+			return slices.Equal(cmd, []string{"systemctl", "start", "ephemera-runner.service"})
+		}) {
+		t.Fatalf("invalid offline cloud-init bootstrap: %+v", cloudConfig)
 	}
 	cfg := Config{MemoryMiB: 2048, VCPUs: 2}
 	t.Setenv("EPHEMERA_TEST_SERIAL", "guest shut down")
