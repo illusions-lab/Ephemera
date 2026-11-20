@@ -92,7 +92,21 @@ func configureFirstRun(path, appName string, existingApp, systemSetup bool) erro
 	if err != nil || !ok {
 		return err
 	}
-	return config.WriteSetup(filepath.Dir(path), data, connection.Key)
+	if err := config.WriteSetup(filepath.Dir(path), data, connection.Key); err != nil {
+		return err
+	}
+	permission := "Organization self-hosted runners"
+	if connection.Permission == "administration" {
+		permission = "Repository administration"
+	}
+	fmt.Println("\nGitHub App installation verified")
+	fmt.Printf("  App:              https://github.com/apps/%s (ID %d)\n", connection.AppSlug, connection.AppID)
+	fmt.Printf("  Installation ID:  %d\n", connection.InstallationID)
+	fmt.Printf("  GitHub target:    %s\n", connection.Scope)
+	fmt.Printf("  Permission:       %s (write)\n", permission)
+	fmt.Printf("  Runner scale set: %q\n", connection.ScaleSet)
+	fmt.Printf("  Configuration:    %s\n\n", path)
+	return nil
 }
 
 func finishSetup(err error) error {
@@ -260,5 +274,9 @@ func applyService(path string) error {
 			return fmt.Errorf("systemctl %s ephemera.service: %w", operation, err)
 		}
 	}
+	if err := exec.Command("systemctl", "is-active", "--quiet", "ephemera.service").Run(); err != nil {
+		return fmt.Errorf("Ephemera service is not active: %w", err)
+	}
+	fmt.Println("Ephemera service is active.")
 	return nil
 }

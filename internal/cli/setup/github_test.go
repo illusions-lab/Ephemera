@@ -207,7 +207,8 @@ func TestBrowserGitHubAppSetup(t *testing.T) {
 	select {
 	case result := <-done:
 		if result.err != nil || result.connection.AppID != 123 || result.connection.InstallationID != 456 || result.connection.Scope != "https://github.com/example" ||
-			result.connection.ScaleSet != "ephemera-custom" || string(result.connection.Key) != key {
+			result.connection.ScaleSet != "ephemera-custom" || result.connection.AppSlug != "ephemera-test" ||
+			result.connection.Permission != "organization_self_hosted_runners" || string(result.connection.Key) != key {
 			t.Fatalf("expected verified GitHub App credentials: %v", result.err)
 		}
 	case <-ctx.Done():

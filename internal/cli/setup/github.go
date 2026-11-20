@@ -48,6 +48,7 @@ type githubApp struct {
 type githubConnection struct {
 	AppID, InstallationID int64
 	Scope, ScaleSet       string
+	AppSlug, Permission   string
 	Key                   []byte
 }
 
@@ -505,7 +506,10 @@ func waitForGitHubApp(ctx context.Context, defaultScaleSet, defaultAppName strin
 		default:
 			connected = true
 			render(w, r, "GitHub App connected.")
-			result <- githubConnection{AppID: app.ID, InstallationID: installation.ID, Scope: target.scope, ScaleSet: target.scaleSet, Key: []byte(app.PEM)}
+			result <- githubConnection{
+				AppID: app.ID, InstallationID: installation.ID, Scope: target.scope, ScaleSet: target.scaleSet,
+				AppSlug: app.Slug, Permission: target.permission, Key: []byte(app.PEM),
+			}
 		}
 	})
 
