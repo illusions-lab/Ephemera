@@ -162,3 +162,64 @@ func TestPollStopsBeforeClaimWhenImageDisappears(t *testing.T) {
 		t.Fatalf("err = %v, calls = %v; expected polling to stop without acquisition", err, s.calls)
 	}
 }
+
+type sequenceSession struct {
+	fakeSession
+	messages   []*scaleset.RunnerScaleSetMessage
+	requests   [][]int64
+	capacities []int
+	acquireErr error
+	next       int
+}
+
+func (s *sequenceSession) GetMessage(_ context.Context, _, capacity int) (*scaleset.RunnerScaleSetMessage, error) {
+	s.capacities = append(s.capacities, capacity)
+	if s.next >= len(s.messages) {
+		return nil, errors.New("end of messages")
+	}
+	message := s.messages[s.next]
+	s.next++
+	return message, nil
+}
+
+func (s *sequenceSession) AcquireJobs(_ context.Context, ids []int64) ([]int64, error) {
+	s.requests = append(s.requests, ids)
+	return ids, s.acquireErr
+}
+
+func (s *sequenceSession) DeleteMessage(context.Context, int) error {
+	s.calls = append(s.calls, "ack")
+	return nil
+}
+
+func TestExecutionPollReplaysAndTracksPendingAcquisitions(t *testing.T) {
+	s := &sequenceSession{
+		fakeSession: fakeSession{initial: &scaleset.RunnerScaleSetStatistic{TotalAcquiredJobs: 1}},
+		messages: []*scaleset.RunnerScaleSetMessage{
+			{MessageID: 1, JobAvailableMessages: []*scaleset.JobAvailable{offer(10), offer(20)}},
+			{MessageID: 1, JobAvailableMessages: []*scaleset.JobAvailable{offer(10), offer(20)}},
+			{MessageID: 2, JobAvailableMessages: []*scaleset.JobAvailable{offer(20)}},
+			{MessageID: 3, Statistics: &scaleset.RunnerScaleSetStatistic{}, JobAvailableMessages: []*scaleset.JobAvailable{offer(10), offer(20)}},
+		},
+	}
+	handle := func(context.Context, Update) error { return nil }
+	_ = pollWithCapacity(context.Background(), s, 2, false, nil, func() int { return 1 }, handle)
+	if want := [][]int64{{10}, {20}}; !reflect.DeepEqual(want, s.requests) || len(s.calls) != 4 || s.capacities[0] != 2 {
+		t.Fatalf("acquisition requests = %v, acknowledgments = %v, capacity = %v", s.requests, s.calls, s.capacities)
+	}
+}
+
+func TestExecutionPollLeavesAmbiguousAcquisitionUnacknowledged(t *testing.T) {
+	failure := errors.New("connection dropped after sending request")
+	s := &sequenceSession{
+		fakeSession: fakeSession{initial: &scaleset.RunnerScaleSetStatistic{}},
+		messages: []*scaleset.RunnerScaleSetMessage{
+			{MessageID: 1, JobAvailableMessages: []*scaleset.JobAvailable{offer(1)}},
+		},
+		acquireErr: failure,
+	}
+	err := pollWithCapacity(context.Background(), s, 2, false, nil, func() int { return 1 }, func(context.Context, Update) error { return nil })
+	if !errors.Is(err, failure) || len(s.calls) != 0 {
+		t.Fatalf("poll error = %v, acknowledgments = %v", err, s.calls)
+	}
+}
