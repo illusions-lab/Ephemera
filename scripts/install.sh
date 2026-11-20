@@ -57,8 +57,8 @@ rollback() {
   if [[ -f "$txn/previous" ]]; then atomic_link "$(cat "$txn/previous")" "$current" || failed=true; else rm -f "$current" || failed=true; fi
   if [[ -f "$txn/unit" ]]; then install -m 0644 "$txn/unit" "$unit" || failed=true; else rm -f "$unit" || failed=true; fi
   systemctl daemon-reload || failed=true
+  if [[ -f "$txn/unit" ]]; then systemctl reset-failed ephemera.service || failed=true; fi
   if [[ -f "$txn/active" ]]; then
-    systemctl reset-failed ephemera.service || failed=true
     systemctl start ephemera.service 9>&- || failed=true
   fi
   if "$failed"; then die 'rollback failed; transaction and releases retained for repair'; fi
