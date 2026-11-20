@@ -155,10 +155,15 @@ Ephemera builds upon established open-source technologies:
 **Ubuntu 24.04 amd64 with systemd is the primary supported host.** Other
 Linux distributions have not been verified to the same level.
 
-Install a release and register the systemd service:
+Install the latest release and register the systemd service from any directory:
 
 ```bash
-sudo bash scripts/install.sh
+curl -fsSL https://github.com/illusions-lab/Ephemera/releases/latest/download/install.sh | sudo bash
+```
+
+On a fresh installation, run the setup wizard to configure and start the service:
+
+```bash
 sudo ephe setup
 ```
 
