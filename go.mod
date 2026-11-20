@@ -6,6 +6,7 @@ require (
 	charm.land/huh/v2 v2.0.3
 	github.com/actions/scaleset v0.4.0
 	github.com/charmbracelet/x/term v0.2.2
+	github.com/golang-jwt/jwt/v4 v4.5.2
 	go.yaml.in/yaml/v3 v3.0.6
 	golang.org/x/sys v0.42.0
 )
@@ -26,7 +27,6 @@ require (
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/golang-jwt/jwt/v4 v4.5.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/go-retryablehttp v0.7.8 // indirect

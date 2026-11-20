@@ -18,6 +18,9 @@ func runSetup(args []string) error {
 	nonInteractive := flags.Bool("non-interactive", false, "read configuration and key from files")
 	source := flags.String("config", "", "source YAML configuration")
 	keyPath := flags.String("github-app-key", "", "source GitHub App PEM file")
+	appName := flags.String("app-name", "", "prefill the name of the GitHub App to create")
+	existingApp := flags.Bool("existing-app", false, "enter credentials for an existing GitHub App in the terminal")
+	localDir := flags.String("local-dir", "", "run setup locally and save configuration and credentials in this directory")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -26,6 +29,26 @@ func runSetup(args []string) error {
 	}
 	if flags.NArg() != 0 {
 		return errors.New("unexpected arguments to setup")
+	}
+	if *appName != "" && (*existingApp || *nonInteractive) {
+		return errors.New("--app-name requires interactive GitHub App creation")
+	}
+	if *existingApp && *nonInteractive {
+		return errors.New("--existing-app requires interactive setup")
+	}
+	if *localDir != "" {
+		if *nonInteractive || *source != "" || *keyPath != "" {
+			return errors.New("--local-dir requires interactive setup")
+		}
+		if !term.IsTerminal(os.Stdin.Fd()) || !term.IsTerminal(os.Stdout.Fd()) {
+			return errors.New("setup requires a terminal")
+		}
+		dir, err := filepath.Abs(*localDir)
+		if err != nil {
+			return err
+		}
+		fmt.Println("Local setup directory:", dir)
+		return setup.RunLocal(filepath.Join(dir, "config.yaml"), *appName, *existingApp)
 	}
 	if *nonInteractive && (*source == "" || *keyPath == "") {
 		return errors.New("--non-interactive requires --config and --github-app-key")
@@ -50,7 +73,7 @@ func runSetup(args []string) error {
 		if !term.IsTerminal(os.Stdin.Fd()) || !term.IsTerminal(os.Stdout.Fd()) {
 			return errors.New("setup requires a terminal or --non-interactive with input files")
 		}
-		return setup.Run(destination)
+		return setup.Run(destination, *appName, *existingApp)
 	}
 	cfg, err := config.Load(*source)
 	if err != nil {

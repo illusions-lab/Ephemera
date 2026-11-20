@@ -16,7 +16,20 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-func Run(path string) error {
+func Run(path, appName string, existingApp bool) error {
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		if err := configureFirstRun(path, appName, existingApp, true); err != nil {
+			return finishSetup(err)
+		}
+		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		return finishSetup(applyService(path))
+	} else if err != nil {
+		return err
+	}
 	var notice string
 	for {
 		var action string
@@ -47,6 +60,48 @@ func Run(path string) error {
 	}
 }
 
+// RunLocal configures GitHub credentials and runner settings without controlling a service.
+func RunLocal(path, appName string, existingApp bool) error {
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return finishSetup(configureFirstRun(path, appName, existingApp, false))
+	} else if err != nil {
+		return err
+	}
+	return finishSetup(editConfig(path))
+}
+
+func configureFirstRun(path, appName string, existingApp, systemSetup bool) error {
+	if existingApp {
+		return editConfig(path)
+	}
+	cfg := config.Defaults()
+	connection, err := createGitHubApp(cfg.GitHub.ScaleSetName, appName, systemSetup)
+	if err != nil {
+		return err
+	}
+	cfg.GitHub.ScopeURL, cfg.GitHub.ScaleSetName = connection.Scope, connection.ScaleSet
+	cfg.GitHub.AppID, cfg.GitHub.InstallationID = connection.AppID, connection.InstallationID
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	ok, err := confirmSetup("Save this configuration?", cfg.GitHub.ScopeURL+" · "+cfg.GitHub.ScaleSetName)
+	if err != nil || !ok {
+		return err
+	}
+	return config.WriteSetup(filepath.Dir(path), data, connection.Key)
+}
+
+func finishSetup(err error) error {
+	if errors.Is(err, huh.ErrUserAborted) {
+		return nil
+	}
+	return err
+}
+
 func editConfig(path string) error {
 	cfg, err := config.Load(path)
 	initial := errors.Is(err, os.ErrNotExist)
@@ -60,31 +115,24 @@ func editConfig(path string) error {
 	if err != nil {
 		return err
 	}
-	app, installation := "", ""
-	if !initial {
-		app = strconv.FormatInt(cfg.GitHub.AppID, 10)
-		installation = strconv.FormatInt(cfg.GitHub.InstallationID, 10)
-	}
-	var keyPath string
 	github := []huh.Field{
 		huh.NewInput().Title("GitHub repository or organization URL").Value(&cfg.GitHub.ScopeURL).Validate(config.ValidateScope),
-		huh.NewInput().Title("Runner Scale Set name").Value(&cfg.GitHub.ScaleSetName),
-		huh.NewInput().Title("GitHub App ID").Value(&app).Validate(positiveNumber),
-		huh.NewInput().Title("GitHub App installation ID").Value(&installation).Validate(positiveNumber),
+		huh.NewInput().Title("Runner Scale Set name").Value(&cfg.GitHub.ScaleSetName).Validate(func(name string) error {
+			if strings.TrimSpace(name) == "" {
+				return errors.New("enter a Runner Scale Set name")
+			}
+			return nil
+		}),
 	}
-	if initial {
-		github = append(github, huh.NewInput().Title("Path to GitHub App private key").Value(&keyPath).Validate(func(path string) error {
-			_, err := config.ReadKey(strings.TrimSpace(path))
-			return err
-		}))
+	if err := huh.NewForm(huh.NewGroup(github...)).Run(); err != nil {
+		return err
 	}
-	limit := strconv.Itoa(cfg.Runner.MaxConcurrent)
-	cpus, memory := strconv.Itoa(cfg.VM.VCPUs), strconv.Itoa(cfg.VM.MemoryMiB)
-	startup, idle := cfg.Runner.StartupTimeout.String(), cfg.Runner.IdleTimeout.String()
-	beforeImage, beforeArch := cfg.VM.Image, cfg.VM.Arch
-	if err := huh.NewForm(
-		huh.NewGroup(github...),
-		huh.NewGroup(
+	if !initial {
+		limit := strconv.Itoa(cfg.Runner.MaxConcurrent)
+		cpus, memory := strconv.Itoa(cfg.VM.VCPUs), strconv.Itoa(cfg.VM.MemoryMiB)
+		startup, idle := cfg.Runner.StartupTimeout.String(), cfg.Runner.IdleTimeout.String()
+		beforeImage, beforeArch := cfg.VM.Image, cfg.VM.Arch
+		if err := huh.NewForm(huh.NewGroup(
 			huh.NewInput().Title("Maximum concurrent runners").Value(&limit).Validate(positiveNumber),
 			huh.NewInput().Title("Runner startup timeout").Value(&startup).Validate(positiveDuration),
 			huh.NewInput().Title("Runner idle timeout").Value(&idle).Validate(positiveDuration),
@@ -92,23 +140,49 @@ func editConfig(path string) error {
 			huh.NewInput().Title("Image architecture (amd64 or arm64)").Value(&cfg.VM.Arch),
 			huh.NewInput().Title("VM CPU count").Value(&cpus).Validate(positiveNumber),
 			huh.NewInput().Title("VM memory (MiB)").Value(&memory).Validate(positiveNumber),
-		),
-	).Run(); err != nil {
+		)).Run(); err != nil {
+			return err
+		}
+		cfg.Runner.MaxConcurrent, err = strconv.Atoi(strings.TrimSpace(limit))
+		if err != nil {
+			return err
+		}
+		cfg.VM.VCPUs, _ = strconv.Atoi(strings.TrimSpace(cpus))
+		cfg.VM.MemoryMiB, _ = strconv.Atoi(strings.TrimSpace(memory))
+		cfg.Runner.StartupTimeout, _ = time.ParseDuration(strings.TrimSpace(startup))
+		cfg.Runner.IdleTimeout, _ = time.ParseDuration(strings.TrimSpace(idle))
+		if cfg.VM.Image != beforeImage || cfg.VM.Arch != beforeArch {
+			cfg.VM.Profile = ""
+		}
+	}
+	var key []byte
+	app, installation := "", ""
+	if !initial {
+		app = strconv.FormatInt(cfg.GitHub.AppID, 10)
+		installation = strconv.FormatInt(cfg.GitHub.InstallationID, 10)
+	}
+	fields := []huh.Field{
+		huh.NewInput().Title("GitHub App ID").Value(&app).Validate(positiveNumber),
+		huh.NewInput().Title("GitHub App installation ID").Value(&installation).Validate(positiveNumber),
+	}
+	var keyPath string
+	if initial {
+		fields = append(fields, huh.NewInput().Title("Path to GitHub App private key").Value(&keyPath).Validate(func(path string) error {
+			_, err := config.ReadKey(strings.TrimSpace(path))
+			return err
+		}))
+	}
+	if err := huh.NewForm(huh.NewGroup(fields...)).Run(); err != nil {
 		return err
+	}
+	if initial {
+		key, err = config.ReadKey(strings.TrimSpace(keyPath))
+		if err != nil {
+			return err
+		}
 	}
 	cfg.GitHub.AppID, _ = strconv.ParseInt(strings.TrimSpace(app), 10, 64)
 	cfg.GitHub.InstallationID, _ = strconv.ParseInt(strings.TrimSpace(installation), 10, 64)
-	cfg.Runner.MaxConcurrent, err = strconv.Atoi(strings.TrimSpace(limit))
-	if err != nil {
-		return err
-	}
-	cfg.VM.VCPUs, _ = strconv.Atoi(strings.TrimSpace(cpus))
-	cfg.VM.MemoryMiB, _ = strconv.Atoi(strings.TrimSpace(memory))
-	cfg.Runner.StartupTimeout, _ = time.ParseDuration(strings.TrimSpace(startup))
-	cfg.Runner.IdleTimeout, _ = time.ParseDuration(strings.TrimSpace(idle))
-	if cfg.VM.Image != beforeImage || cfg.VM.Arch != beforeArch {
-		cfg.VM.Profile = ""
-	}
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -129,10 +203,6 @@ func editConfig(path string) error {
 		return err
 	}
 	if initial {
-		key, err := config.ReadKey(strings.TrimSpace(keyPath))
-		if err != nil {
-			return err
-		}
 		return config.WriteSetup(filepath.Dir(path), data, key)
 	}
 	return saveEditedConfig(path, before, data)

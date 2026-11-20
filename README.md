@@ -161,11 +161,9 @@ Install the latest release and register the systemd service from any directory:
 curl -fsSL https://github.com/illusions-lab/Ephemera/releases/latest/download/install.sh | sudo bash
 ```
 
-On a fresh installation, run the setup wizard to configure and start the service:
-
-```bash
-sudo ephe setup
-```
+On a fresh interactive installation, the installer opens the setup wizard
+automatically. If you ran the installer without a terminal or exited the wizard,
+run `sudo ephe setup` to configure and start the service.
 
 The installer verifies the release checksum and installs both binaries and the
 `ephe` alias. Releases are stored under `/opt/ephemera/releases`; the active
@@ -205,6 +203,45 @@ the setup wizard. Non-interactive upgrades restart the service.
 ## Setup and image selection
 
 `sudo ephe setup` and `sudo ephemera setup` open the same wizard.
+
+On first run, setup opens the browser on a local desktop or prints a setup
+link for a remote host. Enter a GitHub organization, `owner/repository`, or a
+GitHub URL in the browser. Ephemera suggests a GitHub App name based on the
+host, such as `Ephemera runner-01 0482`. Edit it in the browser or prefill a name with
+`ephe setup --app-name "Ephemera Test"`. Change the Runner Scale Set name
+under **Advanced settings**.
+
+For a fresh interactive release install, the installer reuses an
+existing `cloudflared` or verifies and installs the pinned Cloudflare binary
+under `/opt/ephemera/tools`. Offline bundles use an existing binary if available.
+On a headless host, open the temporary Cloudflare HTTPS link at the top of the
+terminal if available. On Linux, the tunnel
+process runs without root privileges. It closes when the browser step ends,
+is canceled, or reaches its 15-minute limit.
+The host's public egress IP and SSH forwarding command appear below the link.
+If you use SSH forwarding, replace the printed SSH destination with the address
+you normally use to reach the VM, then open the printed loopback URL.
+
+Confirm creation and installation in GitHub, then return to the setup page and
+select **Verify installation**. The wizard retrieves the IDs and key. Return to
+the terminal to save the configuration and confirm service startup. The first
+run uses the default runner and VM settings, which you can change under
+**Edit configuration**. To use an existing App on first run, run
+`sudo ephe setup --existing-app` and enter its IDs and PEM path.
+
+To test setup with GitHub directly on a development machine, run this from the
+repository root and use a test organization or repository:
+
+```bash
+go run ./cmd/ephemera setup --local-dir "$(mktemp -d)"
+```
+
+If the browser does not open, use the printed loopback URL. The wizard creates and installs
+a real GitHub App when you confirm on GitHub, then saves `config.yaml` and
+`credentials/github-app.pem` in the printed directory. Local setup does not
+require sudo or start a service. Remove the test App from GitHub when done.
+
+After the first configuration is saved, the wizard offers these actions:
 
 - **Edit configuration** creates or edits `/etc/ephemera/config.yaml`.
   Review the settings summary before saving.

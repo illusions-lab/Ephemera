@@ -28,6 +28,20 @@ destination=/etc/ephemera/config.yaml
 credential=/etc/ephemera/credentials/github-app.pem
 releases=https://github.com/illusions-lab/Ephemera/releases
 fetch=(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --retry 2)
+online=true
+[[ -z "$bundle" ]] || online=false
+install_cloudflared() {
+  local version=2026.11.1
+  local digest=97bb3b02d23a5980fc9c15a1a270e692da1923f103f920d5b16d4931d5ab55e7
+  local asset=cloudflared-linux-amd64
+  if [[ -x "$root/tools/cloudflared" ]] || command -v cloudflared >/dev/null; then return 0; fi
+  printf 'Preparing cloudflared for browser setup...\n'
+  "${fetch[@]}" --retry 0 --connect-timeout 8 --max-time 60 -o "$temp/$asset" \
+    "https://github.com/cloudflare/cloudflared/releases/download/$version/$asset" || return 1
+  (cd "$temp" && printf '%s  %s\n' "$digest" "$asset" | sha256sum -c -) || return 1
+  install -d -m 0755 "$root/tools" || return 1
+  chmod 0755 "$temp/$asset" && mv -Tf "$temp/$asset" "$root/tools/cloudflared"
+}
 latest_version() {
   local url
   url=$("${fetch[@]}" --output /dev/null --write-out '%{url_effective}' "$releases/latest") || die 'could not resolve latest release'
@@ -150,7 +164,17 @@ install -m 0644 "$current/ephemera.service" "$unit"
 if ! systemctl daemon-reload; then rollback; die 'daemon-reload failed'; fi
 if "$first" && ! "$non_interactive" && [[ "$mode" == install ]]; then
   rm -rf "$txn"; rm -f "$staged"
-  printf 'Ephemera installed. Run sudo ephe setup to configure and start it.\n'; exit 0
+  printf 'Ephemera installed.\n'
+  if ( : <> /dev/tty ) 2>/dev/null; then
+    if "$online" && ! install_cloudflared; then
+      printf 'Cloudflare dependency unavailable. Local browser and SSH setup are available.\n' >&2
+    fi
+    flock -u 9
+    /usr/local/bin/ephe setup </dev/tty >/dev/tty 2>&1
+  else
+    printf 'Run sudo ephe setup from a terminal to configure and start it.\n'
+  fi
+  exit 0
 fi
 if "$non_interactive"; then systemctl enable ephemera.service || { rollback; die 'failed to enable service'; }; fi
 if ! systemctl restart ephemera.service 9>&- || ! systemctl is-active --quiet ephemera.service; then
