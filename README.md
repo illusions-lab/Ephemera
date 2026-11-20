@@ -370,7 +370,11 @@ See [LICENSE](LICENSE) for details.
 
 **Ephemera — Run. Finish. Vanish.**
 
-GitHub Actions verifies the packaged daemon on Ubuntu 24.04 amd64 with
-systemd, a local GitHub API fixture, and a real runner image build and boot
-check before publishing the draft. Production tags and releases are created
-by GitHub Actions.
+GitHub Actions runs the standard checks and Ubuntu installation, update, and
+rollback tests before releasing. The release job verifies the draft bundle
+before publication and checks the public downloads and latest release afterward.
+
+The separate **Ubuntu VM acceptance** workflow builds and boots the runner
+image and checks daemon readiness under systemd with a local GitHub API
+fixture. It runs when relevant files change and can also be started manually
+from the Actions tab.
