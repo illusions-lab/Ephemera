@@ -1,4 +1,4 @@
-package images
+package image
 
 import (
 	"bytes"
@@ -20,6 +20,8 @@ import (
 	"time"
 )
 
+const DefaultCache = "/var/lib/ephemera/image"
+
 type Config struct {
 	Platform  Platform
 	Source    Source
@@ -29,6 +31,8 @@ type Config struct {
 
 // Prepare returns an immutable disk only after a successful guest boot check.
 func Prepare(ctx context.Context, root string, cfg Config, logger *slog.Logger) (Image, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
 	if err := cfg.Platform.Validate(); err != nil {
 		return Image{}, err
 	}

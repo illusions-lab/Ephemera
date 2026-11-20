@@ -24,7 +24,7 @@ vm:
 
 # The built-in Ubuntu amd64 recipe uses pinned upstream releases.
 # To select different sources, add:
-# images:
+# image:
 #   ubuntu:
 #     amd64:
 #       base_url: https://example.org/pinned-ubuntu-cloud-image.img

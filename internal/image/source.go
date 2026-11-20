@@ -1,5 +1,5 @@
-// Package images assembles and caches validated runner VM disks.
-package images
+// Package image assembles and caches validated runner VM disks.
+package image
 
 import (
 	"encoding/hex"

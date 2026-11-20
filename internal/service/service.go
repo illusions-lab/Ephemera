@@ -1,38 +1,30 @@
-package main
+package service
 
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"syscall"
 
+	"github.com/illusions-lab/Ephemera/internal/config"
+	"github.com/illusions-lab/Ephemera/internal/image"
 	"github.com/illusions-lab/Ephemera/internal/orders"
 )
 
-func listenOrders(args []string) (result error) {
-	flags := flag.NewFlagSet("orders listen", flag.ContinueOnError)
-	path := flags.String("config", filepath.Join(configDir, "config.yaml"), "configuration file")
-	cacheDir := flags.String("image-cache", defaultImageCache, "image cache directory")
-	keyPath := flags.String("github-app-key", "", "override the GitHub App PEM path")
-	create := flags.Bool("create", false, "create the configured Scale Set if absent")
-	claim := flags.Bool("claim", false, "acquire jobs for a test Scale Set; this command does not launch runners")
-	if err := flags.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return err
-	}
-	if flags.NArg() != 0 {
-		return errors.New("unexpected arguments to orders listen")
-	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+type Options struct {
+	ConfigPath, CacheDir, KeyPath string
+	Create, Claim                 bool
+}
+
+func Run(ctx context.Context, opts Options, logger *slog.Logger) error {
+	return run(ctx, opts, logger, prepareImage, orders.Listen)
+}
+func run(ctx context.Context, opts Options, logger *slog.Logger,
+	prepare func(context.Context, string, image.Config, *slog.Logger) (string, func() error, error),
+	listen func(context.Context, orders.Config, *slog.Logger, func(context.Context, orders.Update) error) error,
+) (result error) {
 	defer func() {
 		state := "Stopping"
 		if ctx.Err() != nil && errors.Is(result, ctx.Err()) {
@@ -48,19 +40,20 @@ func listenOrders(args []string) (result error) {
 	if err := reportHealth(logger, "Starting"); err != nil {
 		return err
 	}
-	cfg, err := loadConfig(*path)
+	cfg, err := config.Load(opts.ConfigPath)
 	if err != nil {
 		return err
 	}
-	if *keyPath == "" {
+	keyPath := opts.KeyPath
+	if keyPath == "" {
 		dir := os.Getenv("CREDENTIALS_DIRECTORY")
 		if dir != "" {
-			*keyPath = filepath.Join(dir, "github-app-key")
+			keyPath = filepath.Join(dir, "github-app-key")
 		} else {
-			*keyPath = filepath.Join(configDir, "credentials", "github-app.pem")
+			keyPath = filepath.Join(config.Dir, "credentials", "github-app.pem")
 		}
 	}
-	key, err := readKey(*keyPath)
+	key, err := config.ReadKey(keyPath)
 	if err != nil {
 		return fmt.Errorf("load GitHub App credential: %w", err)
 	}
@@ -68,22 +61,26 @@ func listenOrders(args []string) (result error) {
 	if err != nil {
 		return fmt.Errorf("determine session owner: %w", err)
 	}
-	if err := reportHealth(logger, "PreparingImages"); err != nil {
+	if err := reportHealth(logger, "PreparingImage"); err != nil {
 		return err
 	}
-	image, err := cfg.prepareImage(ctx, *cacheDir, logger)
+	imageCfg, err := cfg.ImageConfig()
 	if err != nil {
 		return fmt.Errorf("prepare runner image: %w", err)
 	}
-	logger.Info("Runner image ready", "path", image.Path)
+	imagePath, checkImage, err := prepare(ctx, opts.CacheDir, imageCfg, logger)
+	if err != nil {
+		return fmt.Errorf("prepare runner image: %w", err)
+	}
+	logger.Info("Runner image ready", "path", imagePath)
 	if err := reportHealth(logger, "Connecting"); err != nil {
 		return err
 	}
-	if *claim {
+	if opts.Claim {
 		logger.Warn("Acquiring test jobs without launching runners")
 	}
 	healthy := false
-	return orders.Listen(ctx, orders.Config{
+	return listen(ctx, orders.Config{
 		ScopeURL:       cfg.GitHub.ScopeURL,
 		ScaleSetName:   cfg.GitHub.ScaleSetName,
 		AppID:          cfg.GitHub.AppID,
@@ -91,12 +88,12 @@ func listenOrders(args []string) (result error) {
 		PrivateKey:     key,
 		MaxConcurrent:  cfg.Runner.MaxConcurrent,
 		Owner:          owner,
-		Create:         *create,
-		Claim:          *claim,
-		CheckImage:     image.Check,
+		Create:         opts.Create,
+		Claim:          opts.Claim,
+		CheckImage:     checkImage,
 	}, logger, func(_ context.Context, update orders.Update) error {
 		if !healthy {
-			if err := image.Check(); err != nil {
+			if err := checkImage(); err != nil {
 				return err
 			}
 			if err := reportHealth(logger, "Healthy"); err != nil {
@@ -124,4 +121,9 @@ func listenOrders(args []string) (result error) {
 		}
 		return nil
 	})
+}
+
+func prepareImage(ctx context.Context, cache string, cfg image.Config, logger *slog.Logger) (string, func() error, error) {
+	prepared, err := image.Prepare(ctx, cache, cfg, logger)
+	return prepared.Path, prepared.Check, err
 }

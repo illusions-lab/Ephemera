@@ -1,0 +1,72 @@
+package cli
+
+import (
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"github.com/charmbracelet/x/term"
+	"github.com/illusions-lab/Ephemera/internal/cli/setup"
+	"github.com/illusions-lab/Ephemera/internal/config"
+	"go.yaml.in/yaml/v3"
+)
+
+func runSetup(args []string) error {
+	flags := flag.NewFlagSet("setup", flag.ContinueOnError)
+	nonInteractive := flags.Bool("non-interactive", false, "read configuration and key from files")
+	source := flags.String("config", "", "source YAML configuration")
+	keyPath := flags.String("github-app-key", "", "source GitHub App PEM file")
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("unexpected arguments to setup")
+	}
+	if *nonInteractive && (*source == "" || *keyPath == "") {
+		return errors.New("--non-interactive requires --config and --github-app-key")
+	}
+	if !*nonInteractive && (*source != "" || *keyPath != "") {
+		return errors.New("--config and --github-app-key require --non-interactive")
+	}
+	if os.Geteuid() != 0 {
+		return errors.New("run setup with sudo to write the system configuration")
+	}
+	destination := filepath.Join(config.Dir, "config.yaml")
+	if _, err := os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
+		if err != nil {
+			return err
+		}
+		if *nonInteractive {
+			return fmt.Errorf("configuration already exists at %s", destination)
+		}
+	}
+
+	if !*nonInteractive {
+		if !term.IsTerminal(os.Stdin.Fd()) || !term.IsTerminal(os.Stdout.Fd()) {
+			return errors.New("setup requires a terminal or --non-interactive with input files")
+		}
+		return setup.Run(destination)
+	}
+	cfg, err := config.Load(*source)
+	if err != nil {
+		return err
+	}
+	key, err := config.ReadKey(*keyPath)
+	if err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	if err := config.WriteSetup(config.Dir, data, key); err != nil {
+		return err
+	}
+	fmt.Println("Configuration saved to", destination)
+	return nil
+}
