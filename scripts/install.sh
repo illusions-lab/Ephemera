@@ -52,10 +52,12 @@ rollback() {
   [[ -d "$txn" ]] || return 0
   printf 'Restoring previous installation...\n' >&2
   local failed=false
+  # Cancel any start job left behind by an interrupted installer.
+  if [[ -f "$unit" ]]; then systemctl stop ephemera.service 9>&- || failed=true; fi
   if [[ -f "$txn/previous" ]]; then atomic_link "$(cat "$txn/previous")" "$current" || failed=true; else rm -f "$current" || failed=true; fi
   if [[ -f "$txn/unit" ]]; then install -m 0644 "$txn/unit" "$unit" || failed=true; else rm -f "$unit" || failed=true; fi
   systemctl daemon-reload || failed=true
-  if [[ -f "$txn/active" ]]; then systemctl restart ephemera.service 9>&- || failed=true; else systemctl stop ephemera.service 9>&- || failed=true; fi
+  if [[ -f "$txn/active" ]]; then systemctl start ephemera.service 9>&- || failed=true; fi
   if "$failed"; then die 'rollback failed; transaction and releases retained for repair'; fi
   rm -rf "$txn"
 }
