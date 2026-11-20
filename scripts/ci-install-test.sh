@@ -2,7 +2,14 @@
 # Run only on a disposable Ubuntu runner: this installs a system service.
 set -euo pipefail
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+cleanup() {
+  if [[ -f "$work/hosts" ]]; then
+    sudo systemctl stop ephemera-ci-github.service || true
+    sudo cp "$work/hosts" /etc/hosts
+  fi
+  rm -rf "$work"
+}
+trap cleanup EXIT
 mkdir "$work/v1" "$work/v2" "$work/broken"
 commit=$(git rev-parse HEAD)
 for item in v1 v2 broken; do
@@ -30,7 +37,36 @@ ephe image prepare --help
 systemctl is-active --quiet ephemera.service
 before=$(sudo sha256sum /etc/ephemera/config.yaml /etc/ephemera/credentials/github-app.pem)
 start=$(systemctl show -p ActiveEnterTimestampMonotonic --value ephemera.service)
-sudo bash scripts/install.sh --bundle "$work/v2"
+for tag in v0.1.1 v0.1.2; do
+  mkdir "$work/$tag"
+  tar -C "$work/v2" -czf "$work/$tag/ephemera_linux_amd64.tar.gz" \
+    ephemera ephemerad ephemera.service install.sh
+  (cd "$work/$tag" && sha256sum ephemera_linux_amd64.tar.gz > checksums.txt)
+done
+echo corrupt >> "$work/v0.1.2/ephemera_linux_amd64.tar.gz"
+echo v0.1.2 > "$work/latest"
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=github.com \
+  -addext 'subjectAltName=DNS:github.com' -keyout "$work/tls.key" -out "$work/tls.pem"
+cp /etc/hosts "$work/hosts"
+echo '127.0.0.1 github.com' | sudo tee -a /etc/hosts >/dev/null
+sudo systemd-run --unit=ephemera-ci-github --property="StandardError=append:$work/server.log" \
+  python3 "$PWD/scripts/ci-github.py" "$work"
+export CURL_CA_BUNDLE="$work/tls.pem"
+curl --retry 10 --retry-connrefused --retry-delay 1 -sS https://github.com/probe >/dev/null
+if sudo env CURL_CA_BUNDLE="$CURL_CA_BUNDLE" ephe update; then
+  echo 'corrupt update unexpectedly staged' >&2
+  exit 1
+fi
+sudo test ! -e /opt/ephemera/staged
+echo v0.1.1 > "$work/latest"
+sudo env CURL_CA_BUNDLE="$CURL_CA_BUNDLE" ephe update
+output=$(ephe update --check)
+grep -Fx "Current: v0.1.0 $commit" <<< "$output"
+grep -Fx "Staged: v0.1.1 $commit" <<< "$output"
+grep -Fx 'Latest: v0.1.1' <<< "$output"
+assets=$(grep -c '/download/v0.1.1/' "$work/server.log")
+sudo env CURL_CA_BUNDLE="$CURL_CA_BUNDLE" ephe update
+test "$(grep -c '/download/v0.1.1/' "$work/server.log")" = "$assets"
 test "$(systemctl show -p ActiveEnterTimestampMonotonic --value ephemera.service)" = "$start"
 test "$(ephe version)" = "v0.1.0 $commit"
 sudo ephe update --apply
