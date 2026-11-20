@@ -13,7 +13,7 @@ help:
 	@printf '%s\n' \
 	  'make build         Build the CLI and daemon into bin/' \
 	  'make build-linux   Cross-build the CLI and daemon for Linux amd64' \
-	  'make bundle-linux  Stage a Debian amd64 installer bundle in bin/bundle' \
+	  'make bundle-linux  Stage a Linux amd64 installer bundle in bin/bundle' \
 	  'make fmt           Format Go source' \
 	  'make check         Run Go tests, vet, shell checks, and config validation' \
 	  'make config-check  Validate the example or pass CONFIG=/path/to/config.yaml' \
@@ -39,6 +39,7 @@ bundle-linux: build-linux
 	cp bin/ephemera-linux-amd64 bin/bundle/ephemera
 	cp bin/ephemerad-linux-amd64 bin/bundle/ephemerad
 	cp packaging/ephemera.service bin/bundle/ephemera.service
+	cp scripts/install.sh bin/bundle/install.sh
 
 fmt:
 	go fmt ./...
@@ -52,7 +53,9 @@ vet:
 lint-shell:
 	bash -n scripts/install.sh
 	bash -n scripts/dev-vm.sh
-	shellcheck scripts/install.sh scripts/dev-vm.sh
+	bash -n scripts/release-tag.sh
+	bash -n scripts/ci-install-test.sh
+	shellcheck scripts/install.sh scripts/dev-vm.sh scripts/release-tag.sh scripts/ci-install-test.sh
 
 config-check:
 	go run ./cmd/ephemera config validate --config "$$CONFIG"

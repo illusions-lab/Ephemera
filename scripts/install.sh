@@ -1,140 +1,154 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-usage() {
-  cat <<'HELP'
-Usage: sudo bash install.sh [--version TAG | --bundle DIR]
-       [--non-interactive --config FILE --github-app-key FILE]
-
-Install Ephemera on a Debian systemd host. By default, download the latest
-GitHub release and register the service. Run ephe setup to configure and
-start it. Pass --bundle for
-an unpacked release containing ephemera, ephemerad and ephemera.service.
-Existing configuration is reused on repeat installs.
-HELP
-}
-
-die() {
-  printf 'install: %s\n' "$*" >&2
-  exit 1
-}
-
-version=
-bundle=
-config=
-key=
+die() { printf 'install: %s\n' "$*" >&2; exit 1; }
+usage() { printf '%s\n' 'Usage: sudo bash install.sh [--version TAG | --bundle DIR] [--non-interactive --config FILE --github-app-key FILE]' '       ephe update [--check | --apply]'; }
+version='' bundle='' config='' key='' mode=install
 non_interactive=false
-while [[ $# -gt 0 ]]; do
+while (($#)); do
   case "$1" in
     --version|--bundle|--config|--github-app-key)
       [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || die "$1 requires a value"
-      case "$1" in
-        --version) version=$2 ;;
-        --bundle) bundle=$2 ;;
-        --config) config=$2 ;;
-        --github-app-key) key=$2 ;;
-      esac
-      shift 2
-      ;;
-    --non-interactive) non_interactive=true; shift ;;
-    --help|-h) usage; exit 0 ;;
-    *) die "unknown option: $1" ;;
+      case "$1" in --version) version=$2;; --bundle) bundle=$2;; --config) config=$2;; --github-app-key) key=$2;; esac; shift 2;;
+    --non-interactive) non_interactive=true; shift;;
+    --update) mode=stage; shift;;
+    --check) [[ "$mode" == stage ]] || die 'unexpected --check'; mode=check; shift;;
+    --apply) [[ "$mode" == stage ]] || die 'unexpected --apply'; mode=apply; shift;;
+    --help|-h) usage; exit 0;; *) die "unknown option: $1";;
   esac
 done
-
 [[ -z "$version" || -z "$bundle" ]] || die 'choose either --version or --bundle'
-if [[ -n "$config" || -n "$key" ]]; then
-  "$non_interactive" && [[ -n "$config" && -n "$key" ]] ||
-    die 'provide --non-interactive, --config and --github-app-key together'
-fi
-[[ "$(uname -s)" == Linux ]] || die 'installation requires Linux'
-[[ "$EUID" -eq 0 ]] || die 'run this script with sudo'
-if [[ ! -d /run/systemd/system ]] || ! command -v systemctl >/dev/null; then
-  die 'installation requires a running systemd instance'
-fi
-exec 9>/run/lock/ephemera-install.lock
-flock -n 9 || die 'another Ephemera install is in progress'
-
+[[ "$mode" == install || ( -z "$version" && -z "$bundle" && -z "$config" && -z "$key" && "$non_interactive" == false ) ]] || die 'invalid update options'
+[[ -z "$config$key" ]] || { "$non_interactive" && [[ -n "$config" && -n "$key" ]] || die 'provide --non-interactive, --config and --github-app-key together'; }
+root=/opt/ephemera
+current=$root/current
+staged=$root/staged
+unit=/etc/systemd/system/ephemera.service
 destination=/etc/ephemera/config.yaml
 credential=/etc/ephemera/credentials/github-app.pem
-first_install=false
-if [[ -e "$destination" || -L "$destination" ]]; then
-  [[ -z "$config" ]] || die "configuration already exists at $destination; omit the input files to upgrade"
-  [[ -f "$credential" && ! -L "$credential" && "$(stat -c '%u:%a' "$credential")" == 0:600 ]] ||
-    die "expected a root-owned private key with mode 0600 at $credential"
-else
-  first_install=true
-  if "$non_interactive"; then
-    [[ -r "$config" && -r "$key" ]] || die 'first install requires readable --config and --github-app-key files'
-  fi
+releases=https://github.com/illusions-lab/Ephemera/releases
+fetch=(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --retry 2)
+latest_version() {
+  local url
+  url=$("${fetch[@]}" --output /dev/null --write-out '%{url_effective}' "$releases/latest") || die 'could not resolve latest release'
+  [[ "$url" == "$releases/tag/"* ]] || die 'could not resolve latest release tag'
+  printf '%s\n' "${url#"$releases/tag/"}"
+}
+if [[ "$mode" == check ]]; then
+  printf 'Current: '; if [[ -x "$current/ephemera" ]]; then "$current/ephemera" version; elif command -v ephemera >/dev/null; then ephemera version || true; else echo none; fi
+  printf 'Staged: '; if [[ -x "$staged/ephemera" ]]; then "$staged/ephemera" version; else echo none; fi
+  printf 'Latest: %s\n' "$(latest_version)"
+  exit
 fi
-
+[[ "$(uname -s)" == Linux && "$EUID" -eq 0 ]] || die 'installation requires Linux and root'
+if [[ ! -d /run/systemd/system ]] || ! command -v systemctl >/dev/null; then die 'installation requires a running systemd instance'; fi
+exec 9>/run/lock/ephemera-install.lock
+flock -n 9 || die 'another Ephemera install is in progress'
+mkdir -p "$root/releases"
+txn=$root/transaction
+atomic_link() { ln -sfn "$1" "$2.new"; mv -Tf "$2.new" "$2"; }
+rollback() {
+  [[ -d "$txn" ]] || return 0
+  printf 'Restoring previous installation...\n' >&2
+  local failed=false
+  if [[ -f "$txn/previous" ]]; then atomic_link "$(cat "$txn/previous")" "$current" || failed=true; else rm -f "$current" || failed=true; fi
+  if [[ -f "$txn/unit" ]]; then install -m 0644 "$txn/unit" "$unit" || failed=true; else rm -f "$unit" || failed=true; fi
+  systemctl daemon-reload || failed=true
+  if [[ -f "$txn/active" ]]; then systemctl restart ephemera.service || failed=true; else systemctl stop ephemera.service || failed=true; fi
+  if "$failed"; then die 'rollback failed; transaction and releases retained for repair'; fi
+  rm -rf "$txn"
+}
+rollback
+first=true
+[[ -e "$destination" || -L "$destination" ]] && first=false
+if ! "$first"; then
+  [[ -z "$config" ]] || die 'configuration already exists; omit input files'
+  [[ -f "$credential" && ! -L "$credential" && "$(stat -c '%u:%a' "$credential")" == 0:600 ]] || die 'invalid GitHub App private key permissions'
+fi
 temp=$(mktemp -d)
-trap 'rm -r -- "$temp"' EXIT
+trap 'rm -rf -- "$temp"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-
-if [[ -z "$bundle" ]]; then
-  for command in curl sha256sum tar; do
-    command -v "$command" >/dev/null || die "required command missing: $command"
-  done
-  case "$(uname -m)" in
-    x86_64) arch=amd64 ;;
-    aarch64) arch=arm64 ;;
-    *) die 'unsupported CPU architecture' ;;
-  esac
-  releases=https://github.com/illusions-lab/Ephemera/releases
-  fetch=(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --retry 2)
-  if [[ -z "$version" ]]; then
-    latest=$("${fetch[@]}" --output /dev/null --write-out '%{url_effective}' "$releases/latest")
-    [[ "$latest" == "$releases/tag/"* ]] || die 'could not resolve the latest release tag'
-    version=${latest#"$releases/tag/"}
+if [[ "$mode" != apply ]]; then
+  if [[ -z "$bundle" ]]; then
+    [[ "$(uname -m)" == x86_64 ]] || die 'only amd64 is supported'
+    [[ -n "$version" ]] || version=$(latest_version)
+    [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die 'invalid release tag'
+    if [[ "$mode" == stage && -x "$current/ephemera" ]]; then
+      installed=$("$current/ephemera" version | cut -d' ' -f1)
+      if [[ "$installed" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "$(printf '%s\n%s\n' "$installed" "$version" | sort -V | tail -n1)" == "$installed" ]]; then
+        printf 'Already up to date: %s\n' "$installed"; exit 0
+      fi
+    fi
+    if [[ "$mode" == stage && -x "$staged/ephemera" && "$("$staged/ephemera" version | cut -d' ' -f1)" == "$version" ]]; then
+      printf 'Already staged: %s\n' "$version"; exit 0
+    fi
+    archive=ephemera_linux_amd64.tar.gz
+    "${fetch[@]}" -o "$temp/checksums.txt" "$releases/download/$version/checksums.txt"
+    "${fetch[@]}" -o "$temp/$archive" "$releases/download/$version/$archive"
+    expected=$(awk -v asset="$archive" '$2 == asset || $2 == "*" asset { print $1 }' "$temp/checksums.txt")
+    [[ "$expected" =~ ^[[:xdigit:]]{64}$ ]] || die 'invalid archive checksum'
+    (cd "$temp" && printf '%s  %s\n' "$expected" "$archive" | sha256sum -c -)
+    mkdir "$temp/bundle"
+    for file in ephemera ephemerad ephemera.service install.sh; do tar -xOzf "$temp/$archive" "$file" > "$temp/bundle/$file" || die "missing $file"; done
+    bundle=$temp/bundle
   fi
-  [[ "$version" =~ ^[[:alnum:]][[:alnum:]._-]*$ ]] || die 'invalid release tag'
-  archive="ephemera_linux_$arch.tar.gz"
-  "${fetch[@]}" --output "$temp/checksums.txt" "$releases/download/$version/checksums.txt"
-  "${fetch[@]}" --output "$temp/$archive" "$releases/download/$version/$archive"
-  expected=$(awk -v asset="$archive" '$2 == asset || $2 == "*" asset { print $1 }' "$temp/checksums.txt")
-  [[ "$expected" =~ ^[[:xdigit:]]{64}$ ]] || die "expected one SHA-256 digest for $archive"
-  (cd "$temp" && printf '%s  %s\n' "$expected" "$archive" | sha256sum -c -)
-  mkdir "$temp/bundle"
-  tar -xOzf "$temp/$archive" ephemera > "$temp/bundle/ephemera"
-  tar -xOzf "$temp/$archive" ephemerad > "$temp/bundle/ephemerad" ||
-    die "this release lacks ephemerad; use a newer release"
-  tar -xOzf "$temp/$archive" ephemera.service > "$temp/bundle/ephemera.service"
-  bundle="$temp/bundle"
+  for file in ephemera ephemerad ephemera.service; do [[ -s "$bundle/$file" ]] || die "missing bundle file: $file"; done
+  install -m 0755 "$bundle/ephemera" "$temp/ephemera"
+  install -m 0755 "$bundle/ephemerad" "$temp/ephemerad"
+  identity=$("$temp/ephemera" version)
+  [[ "$identity" == "$("$temp/ephemerad" --version)" ]] || die 'binary versions or commits differ'
+  [[ -z "$version" || "${identity%% *}" == "$version" ]] || die 'bundle version does not match release tag'
+  if "$first" && "$non_interactive"; then
+    [[ -r "$config" && -r "$key" ]] || die 'first install requires readable config and key'
+    "$temp/ephemera" setup --non-interactive --config "$config" --github-app-key "$key"
+  fi
+  [[ ! -f "$destination" ]] || "$temp/ephemera" config validate --config "$destination"
+  # The content hash keeps development bundles and repeated versions distinct.
+  id=$(cat "$temp/ephemera" "$temp/ephemerad" "$bundle/ephemera.service" | sha256sum | cut -c1-16)
+  target=$root/releases/$id
+  if [[ ! -d "$target" ]]; then
+    mkdir "$temp/release"
+    cp "$temp/ephemera" "$temp/ephemerad" "$temp/release/"
+    install -m 0644 "$bundle/ephemera.service" "$temp/release/ephemera.service"
+    install -m 0755 "${bundle}/install.sh" "$temp/release/install.sh" 2>/dev/null || install -m 0755 "$0" "$temp/release/install.sh"
+    mv "$temp/release" "$target"
+  fi
+  atomic_link "$target" "$staged"
+  if [[ "$mode" == stage ]] || { [[ "$mode" == install ]] && ! "$first" && ! "$non_interactive"; }; then
+    printf 'Staged %s. Run sudo bash %s --update --apply to activate.\n' "$identity" "$target/install.sh"; exit 0
+  fi
 fi
-
-for file in ephemera ephemerad ephemera.service; do
-  [[ -f "$bundle/$file" && -s "$bundle/$file" ]] || die "missing or empty bundle file: $file (use a current installer bundle)"
-done
-alias_path=/usr/local/bin/ephe
-if [[ -e "$alias_path" || -L "$alias_path" ]]; then
-  [[ -L "$alias_path" && "$(readlink "$alias_path")" == ephemera ]] ||
-    die "$alias_path already exists and is not the Ephemera alias"
+[[ -x "$staged/ephemera" ]] || die 'no staged release'
+[[ ! -f "$destination" ]] || "$staged/ephemera" config validate --config "$destination"
+# Preserve an existing flat installation as a rollback target before replacing it.
+if [[ ! -L "$current" && -f /usr/local/bin/ephemera && ! -L /usr/local/bin/ephemera ]]; then
+  legacy=$root/releases/legacy
+  mkdir -p "$legacy"
+  cp /usr/local/bin/ephemera "$legacy/ephemera"
+  [[ ! -f /usr/local/bin/ephemerad ]] || cp /usr/local/bin/ephemerad "$legacy/ephemerad"
+  [[ ! -f "$unit" ]] || cp "$unit" "$legacy/ephemera.service"
+  atomic_link "$legacy" "$current"
 fi
-install -m 0755 -- "$bundle/ephemera" "$temp/ephemera"
-if "$first_install" && "$non_interactive"; then
-  "$temp/ephemera" setup --non-interactive --config "$config" --github-app-key "$key"
+mkdir "$temp/transaction"
+[[ ! -L "$current" ]] || readlink "$current" > "$temp/transaction/previous"
+[[ ! -f "$unit" ]] || cp "$unit" "$temp/transaction/unit"
+if systemctl is-active --quiet ephemera.service; then touch "$temp/transaction/active"; fi
+mv "$temp/transaction" "$txn"
+atomic_link "$(readlink "$staged")" "$current"
+for binary in ephemera ephemerad; do atomic_link "$current/$binary" "/usr/local/bin/$binary"; done
+if [[ -e /usr/local/bin/ephe || -L /usr/local/bin/ephe ]]; then
+  [[ -L /usr/local/bin/ephe && "$(readlink /usr/local/bin/ephe)" == ephemera ]] || { rollback; die 'ephe alias already exists'; }
+else ln -s ephemera /usr/local/bin/ephe; fi
+install -m 0644 "$current/ephemera.service" "$unit"
+if ! systemctl daemon-reload; then rollback; die 'daemon-reload failed'; fi
+if "$first" && ! "$non_interactive" && [[ "$mode" == install ]]; then
+  rm -rf "$txn"; rm -f "$staged"
+  printf 'Ephemera installed. Run sudo ephe setup to configure and start it.\n'; exit 0
 fi
-if [[ -f "$destination" ]]; then
-  "$temp/ephemera" config validate --config "$destination"
-fi
-
-install -D -m 0755 -- "$temp/ephemera" /usr/local/bin/ephemera
-install -D -m 0755 -- "$bundle/ephemerad" /usr/local/bin/ephemerad
-if [[ ! -L "$alias_path" ]]; then
-  ln -s ephemera "$alias_path"
-fi
-install -D -m 0644 -- "$bundle/ephemera.service" /etc/systemd/system/ephemera.service
-systemctl daemon-reload
-if ! "$non_interactive"; then
-  printf 'Ephemera installed. Run sudo ephe setup to configure or apply changes.\n'
-  exit 0
-fi
-systemctl enable ephemera.service
+if "$non_interactive"; then systemctl enable ephemera.service || { rollback; die 'failed to enable service'; }; fi
 if ! systemctl restart ephemera.service || ! systemctl is-active --quiet ephemera.service; then
-  systemctl status ephemera.service --no-pager >&2 || true
-  die 'service failed to start; see journalctl -u ephemera'
+  rollback; die 'service failed to become ready; previous installation restored'
 fi
-printf 'Ephemera is active. Configuration: %s\n' "$destination"
+rm -rf "$txn"; rm -f "$staged"
+printf 'Ephemera is active: %s\n' "$("$current/ephemera" version)"

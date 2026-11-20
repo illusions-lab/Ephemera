@@ -1,0 +1,35 @@
+version: 2
+project_name: ephemera
+builds:
+  - id: ephemera
+    main: ./cmd/ephemera
+    binary: ephemera
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64]
+    ldflags: ['-s -w -X github.com/illusions-lab/Ephemera/internal/version.Version={{ .Tag }} -X github.com/illusions-lab/Ephemera/internal/version.Commit={{ .FullCommit }}']
+  - id: ephemerad
+    main: ./cmd/ephemerad
+    binary: ephemerad
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64]
+    ldflags: ['-s -w -X github.com/illusions-lab/Ephemera/internal/version.Version={{ .Tag }} -X github.com/illusions-lab/Ephemera/internal/version.Commit={{ .FullCommit }}']
+archives:
+  - id: bundle
+    ids: [ephemera, ephemerad]
+    name_template: 'ephemera_{{ .Os }}_{{ .Arch }}'
+    formats: [tar.gz]
+    files:
+      - src: packaging/ephemera.service
+        dst: ephemera.service
+      - src: scripts/install.sh
+        dst: install.sh
+checksum:
+  name_template: checksums.txt
+release:
+  draft: true
+  extra_files:
+    - glob: scripts/install.sh
+changelog:
+  disable: true

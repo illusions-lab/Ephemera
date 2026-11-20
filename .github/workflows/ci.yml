@@ -1,0 +1,93 @@
+name: CI and release
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: make check
+  ubuntu-install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Exercise installation and rollback on Ubuntu amd64
+        run: scripts/ci-install-test.sh
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [check, ubuntu-install]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: ephemera-release
+      queue: max
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Require Ubuntu pre-release verification
+        env:
+          VERIFIED: ${{ vars.EPHEMERA_SYSTEMD_VERIFIED }}
+        run: |
+          test "$VERIFIED" = true || { echo "Complete Ubuntu systemd and Ubuntu image verification, then set EPHEMERA_SYSTEMD_VERIFIED=true." >&2; exit 1; }
+      - name: Allocate tag
+        id: tag
+        run: scripts/release-tag.sh
+      - name: Check existing release
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          if gh release view "$TAG" --json isDraft --jq '.isDraft' > /tmp/ephemera-release-state 2>/dev/null; then
+            if [ "$(cat /tmp/ephemera-release-state)" = false ]; then echo 'published=true' >> "$GITHUB_OUTPUT"; else gh release delete "$TAG" --yes; fi
+          fi
+      - uses: goreleaser/goreleaser-action@v6
+        if: steps.existing.outputs.published != 'true'
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Verify release bundle
+        if: steps.existing.outputs.published != 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          cd dist
+          sha256sum -c checksums.txt
+          mkdir verify
+          tar -xzf ephemera_linux_amd64.tar.gz -C verify
+          test -s verify/ephemera.service && test -s verify/install.sh
+          test "$(verify/ephemera version)" = "$TAG $GITHUB_SHA"
+          test "$(verify/ephemerad --version)" = "$TAG $GITHUB_SHA"
+      - name: Publish verified draft
+        if: steps.existing.outputs.published != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          latest=$(gh release list --exclude-drafts --exclude-pre-releases --limit 1000 --json tagName --jq '.[].tagName' | grep -E '^v0\.1\.[0-9]+$' | sort -V | tail -n1 || true)
+          if [ -n "$latest" ] && [ "$(printf '%s\n%s\n' "$TAG" "$latest" | sort -V | tail -n1)" != "$TAG" ]; then
+            gh release edit "$TAG" --draft=false --latest=false
+          else
+            gh release edit "$TAG" --draft=false --latest
+          fi

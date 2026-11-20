@@ -14,6 +14,7 @@ import (
 	"github.com/illusions-lab/Ephemera/internal/config"
 	"github.com/illusions-lab/Ephemera/internal/image"
 	"github.com/illusions-lab/Ephemera/internal/service"
+	"github.com/illusions-lab/Ephemera/internal/version"
 )
 
 func main() {
@@ -23,6 +24,10 @@ func main() {
 	}
 }
 func run(args []string) error {
+	if len(args) == 1 && args[0] == "--version" {
+		fmt.Println(version.String())
+		return nil
+	}
 	flags := flag.NewFlagSet("ephemerad", flag.ContinueOnError)
 	path := flags.String("config", filepath.Join(config.Dir, "config.yaml"), "configuration file")
 	cacheDir := flags.String("image-cache", image.DefaultCache, "image cache directory")

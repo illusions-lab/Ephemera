@@ -152,8 +152,8 @@ Ephemera builds upon established open-source technologies:
 
 ## Installation
 
-**We recommend Debian with systemd. We have not tested installation on
-operating systems other than Debian.**
+**Ubuntu 24.04 amd64 with systemd is the primary supported host.** Other
+Linux distributions have not been verified to the same level.
 
 Install a release and register the systemd service:
 
@@ -162,9 +162,26 @@ sudo bash scripts/install.sh
 sudo ephe setup
 ```
 
-The installer checks the release checksum and installs `ephemera`, `ephemerad`, and the
-`ephe` alias. Use `--version TAG` to pin a release or `--bundle DIR` to use
-a local bundle. For a Debian amd64 bundle from source, run
+The installer verifies the release checksum and installs both binaries and the
+`ephe` alias. Releases are stored under `/opt/ephemera/releases`; the active
+version is selected by `/opt/ephemera/current`. Check the installed version
+with `ephe version` (or `ephemerad --version`).
+
+```sh
+ephe update --check       # show current, staged, and latest versions
+sudo ephe update          # download and stage a newer release
+sudo ephe update --apply  # switch and wait for the service to become ready
+```
+
+Staging leaves the service running. If activation fails, the installer restores
+the previous version and service state. An interrupted activation is recovered
+on the next installation or update operation. Configuration, the GitHub App key,
+and the image cache are retained. To stage a specific release, including an older
+one, use `sudo bash install.sh --version v0.1.0` and follow the printed apply
+command. `--bundle DIR` supports offline and development installations.
+
+Use `--version TAG` to pin a release or `--bundle DIR` to use
+a local bundle. For an Ubuntu amd64 bundle from source, run
 `make bundle-linux` and pass `--bundle bin/bundle`. The service currently
 observes GitHub job demand. Running jobs in ephemeral VMs is still pending.
 
@@ -211,7 +228,7 @@ records the resolved profile and pinned source in the configuration.
 Preparing or saving an image keeps the current service running.
 
 For command-line image preparation, run `sudo ephemera image prepare`
-on a Debian amd64 host with the [image build tools](#runner-images-and-readiness)
+on an Ubuntu amd64 host with the [image build tools](#runner-images-and-readiness)
 installed.
 
 ## Development
@@ -290,7 +307,7 @@ both source pins under `image.ubuntu.amd64` with `base_url`,
 `base_sha256`, `runner_version`, and `runner_sha256`. The image tag and
 the Scale Set name can stay the same after a source update.
 
-On a Debian amd64 host, install the build tools, then prepare and test
+On an Ubuntu amd64 host, install the build tools, then prepare and test
 the image independently of GitHub:
 
 ```bash
@@ -352,3 +369,5 @@ See [LICENSE](LICENSE) for details.
 ---
 
 **Ephemera — Run. Finish. Vanish.**
+
+Before the first production release, verify the release bundle on Ubuntu amd64 with a real systemd service and Ubuntu image preparation, then set the GitHub Actions repository variable `EPHEMERA_SYSTEMD_VERIFIED` to `true`. The release job remains blocked until this acceptance test is complete. Production tags and releases are created only by GitHub Actions.
