@@ -1,18 +1,19 @@
 .DEFAULT_GOAL := help
 
 CONFIG ?= configs/ephemera.example.yaml
-IMAGE_CACHE ?= bin/images
+IMAGE_CACHE ?= bin/image
 DEBIAN_IMAGE ?=
 DEBIAN_SHA512 ?=
 
 export CONFIG IMAGE_CACHE DEBIAN_IMAGE DEBIAN_SHA512
 
-.PHONY: help build build-linux fmt test vet lint-shell check config-check image-prepare vm-boot vm-test vm-debug
+.PHONY: help build build-linux bundle-linux fmt test vet lint-shell check config-check image-prepare vm-boot vm-test vm-debug
 
 help:
 	@printf '%s\n' \
-	  'make build         Build the host CLI into bin/ephemera' \
-	  'make build-linux   Build the Debian VM CLI into bin/ephemera-linux-amd64' \
+	  'make build         Build the CLI and daemon into bin/' \
+	  'make build-linux   Cross-build the CLI and daemon for Linux amd64' \
+	  'make bundle-linux  Stage a Debian amd64 installer bundle in bin/bundle' \
 	  'make fmt           Format Go source' \
 	  'make check         Run Go tests, vet, shell checks, and config validation' \
 	  'make config-check  Validate the example or pass CONFIG=/path/to/config.yaml' \
@@ -26,10 +27,18 @@ help:
 build:
 	mkdir -p bin
 	go build -o bin/ephemera ./cmd/ephemera
+	go build -o bin/ephemerad ./cmd/ephemerad
 
 build-linux:
 	mkdir -p bin
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/ephemera-linux-amd64 ./cmd/ephemera
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/ephemerad-linux-amd64 ./cmd/ephemerad
+
+bundle-linux: build-linux
+	mkdir -p bin/bundle
+	cp bin/ephemera-linux-amd64 bin/bundle/ephemera
+	cp bin/ephemerad-linux-amd64 bin/bundle/ephemerad
+	cp packaging/ephemera.service bin/bundle/ephemera.service
 
 fmt:
 	go fmt ./...
@@ -51,7 +60,7 @@ config-check:
 check: test vet lint-shell config-check
 
 image-prepare:
-	go run ./cmd/ephemera images prepare --config "$$CONFIG" --image-cache "$$IMAGE_CACHE"
+	go run ./cmd/ephemera image prepare --config "$$CONFIG" --image-cache "$$IMAGE_CACHE"
 
 vm-boot:
 	./scripts/dev-vm.sh --image "$$DEBIAN_IMAGE" --sha512 "$$DEBIAN_SHA512"

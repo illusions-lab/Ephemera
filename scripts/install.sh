@@ -7,8 +7,9 @@ Usage: sudo bash install.sh [--version TAG | --bundle DIR]
        [--non-interactive --config FILE --github-app-key FILE]
 
 Install Ephemera on a Debian systemd host. By default, download the latest
-GitHub release and run the setup wizard on first install. Pass --bundle for
-an unpacked release containing ephemera and ephemera.service.
+GitHub release and register the service. Run ephe setup to configure and
+start it. Pass --bundle for
+an unpacked release containing ephemera, ephemerad and ephemera.service.
 Existing configuration is reused on repeat installs.
 HELP
 }
@@ -65,8 +66,6 @@ else
   first_install=true
   if "$non_interactive"; then
     [[ -r "$config" && -r "$key" ]] || die 'first install requires readable --config and --github-app-key files'
-  else
-    [[ -t 0 && -t 1 ]] || die 'use a terminal or provide non-interactive input files'
   fi
 fi
 
@@ -100,26 +99,39 @@ if [[ -z "$bundle" ]]; then
   (cd "$temp" && printf '%s  %s\n' "$expected" "$archive" | sha256sum -c -)
   mkdir "$temp/bundle"
   tar -xOzf "$temp/$archive" ephemera > "$temp/bundle/ephemera"
+  tar -xOzf "$temp/$archive" ephemerad > "$temp/bundle/ephemerad" ||
+    die "this release lacks ephemerad; use a newer release"
   tar -xOzf "$temp/$archive" ephemera.service > "$temp/bundle/ephemera.service"
   bundle="$temp/bundle"
 fi
 
-for file in ephemera ephemera.service; do
-  [[ -f "$bundle/$file" && -s "$bundle/$file" ]] || die "missing or empty bundle file: $file"
+for file in ephemera ephemerad ephemera.service; do
+  [[ -f "$bundle/$file" && -s "$bundle/$file" ]] || die "missing or empty bundle file: $file (use a current installer bundle)"
 done
-install -m 0755 -- "$bundle/ephemera" "$temp/ephemera"
-if "$first_install"; then
-  args=(setup)
-  if "$non_interactive"; then
-    args+=(--non-interactive --config "$config" --github-app-key "$key")
-  fi
-  "$temp/ephemera" "${args[@]}"
+alias_path=/usr/local/bin/ephe
+if [[ -e "$alias_path" || -L "$alias_path" ]]; then
+  [[ -L "$alias_path" && "$(readlink "$alias_path")" == ephemera ]] ||
+    die "$alias_path already exists and is not the Ephemera alias"
 fi
-"$temp/ephemera" config validate --config "$destination"
+install -m 0755 -- "$bundle/ephemera" "$temp/ephemera"
+if "$first_install" && "$non_interactive"; then
+  "$temp/ephemera" setup --non-interactive --config "$config" --github-app-key "$key"
+fi
+if [[ -f "$destination" ]]; then
+  "$temp/ephemera" config validate --config "$destination"
+fi
 
 install -D -m 0755 -- "$temp/ephemera" /usr/local/bin/ephemera
+install -D -m 0755 -- "$bundle/ephemerad" /usr/local/bin/ephemerad
+if [[ ! -L "$alias_path" ]]; then
+  ln -s ephemera "$alias_path"
+fi
 install -D -m 0644 -- "$bundle/ephemera.service" /etc/systemd/system/ephemera.service
 systemctl daemon-reload
+if ! "$non_interactive"; then
+  printf 'Ephemera installed. Run sudo ephe setup to configure or apply changes.\n'
+  exit 0
+fi
 systemctl enable ephemera.service
 if ! systemctl restart ephemera.service || ! systemctl is-active --quiet ephemera.service; then
   systemctl status ephemera.service --no-pager >&2 || true

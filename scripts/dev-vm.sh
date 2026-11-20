@@ -9,7 +9,7 @@ Usage: scripts/dev-vm.sh --image PATH_OR_HTTPS_URL --sha512 DIGEST
 Boot a fresh Debian amd64 cloud VM and verify cloud-init, SSH and systemd.
 Use a versioned genericcloud qcow2 image and its published SHA-512 digest.
 
---bundle DIR  Install ephemera, ephemera.service and config.yaml from DIR.
+--bundle DIR  Install ephemera, ephemerad, ephemera.service and config.yaml from DIR.
               Exercise install.sh twice, then restart the service.
               Use a Linux amd64 binary and a secret-free test configuration.
 --installer-smoke  Build the local CLI and test installation with a fixture unit.
@@ -53,7 +53,7 @@ if "$installer_smoke"; then
 fi
 if [[ -n "$bundle" ]]; then
   bundle=$(cd -- "$bundle" && pwd) || die 'cannot open bundle directory'
-  for artifact in ephemera ephemera.service config.yaml; do
+  for artifact in ephemera ephemerad ephemera.service config.yaml; do
     [[ -f "$bundle/$artifact" && -r "$bundle/$artifact" ]] || die "missing bundle file: $artifact"
   done
 fi
@@ -118,6 +118,7 @@ if "$installer_smoke"; then
   (
     cd "$script_dir/.."
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$bundle/ephemera" ./cmd/ephemera
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$bundle/ephemerad" ./cmd/ephemerad
     cp configs/ephemera.example.yaml "$bundle/config.yaml"
   )
   cat > "$bundle/ephemera.service" <<'UNIT'
@@ -128,6 +129,7 @@ Description=Ephemera installer smoke test
 Type=oneshot
 LoadCredential=github-app-key:/etc/ephemera/credentials/github-app.pem
 ExecStartPre=/usr/bin/test -s %d/github-app-key
+ExecStartPre=/usr/local/bin/ephemerad --help
 ExecStart=/usr/local/bin/ephemera config validate
 RemainAfterExit=yes
 
@@ -229,11 +231,17 @@ if [[ -n "$bundle" ]]; then
   # This per-run RSA key checks credential installation without GitHub access.
   ssh-keygen -q -t rsa -b 2048 -m PEM -N '' -f "$work_dir/test-github-app.pem"
   scp -P "$port" "${ssh_options[@]}" \
-    "$bundle/ephemera" "$bundle/ephemera.service" "$bundle/config.yaml" \
+    "$bundle/ephemera" "$bundle/ephemerad" "$bundle/ephemera.service" "$bundle/config.yaml" \
     "$work_dir/test-github-app.pem" "$script_dir/install.sh" "$guest:"
   run_guest 'sudo bash -se' <<'GUEST'
 timeout 120 bash install.sh --bundle . --non-interactive \
   --config config.yaml --github-app-key test-github-app.pem
+test "$(readlink /usr/local/bin/ephe)" = ephemera
+ephe help | grep -F "image prepare"
+ephe image prepare --help 2>&1 | grep -F "image-cache"
+ephe config validate
+ephemera config validate
+ephemerad --help
 before=$(sha256sum /etc/ephemera/config.yaml /etc/ephemera/credentials/github-app.pem)
 timeout 120 bash install.sh --bundle . --non-interactive
 test "$before" = "$(sha256sum /etc/ephemera/config.yaml /etc/ephemera/credentials/github-app.pem)"

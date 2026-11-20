@@ -1,0 +1,18 @@
+[Unit]
+Description=Ephemera GitHub Actions Scale Set listener
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/ephemera/config.yaml
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/ephemerad --create
+LoadCredential=github-app-key:/etc/ephemera/credentials/github-app.pem
+StateDirectory=ephemera
+TimeoutStartSec=40min
+TimeoutStopSec=30s
+Restart=on-failure
+RestartSec=15s
+
+[Install]
+WantedBy=multi-user.target
