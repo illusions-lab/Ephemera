@@ -68,7 +68,7 @@ func Prepare(ctx context.Context, root string, cfg Config, logger *slog.Logger) 
 	}
 	// Recipe revisions also cover changes to commands and dependency setup.
 	hash := sha256.New()
-	io.WriteString(hash, "ubuntu-image-recipe-v1\x00")
+	io.WriteString(hash, "ubuntu-image-recipe-v2\x00")
 	hash.Write(recipe)
 	io.WriteString(hash, runnerUnit+runnerLauncher+bootConfig)
 	key := cfg.Platform.Tag + "-" + cfg.Platform.Arch + "-" + hex.EncodeToString(hash.Sum(nil))
@@ -152,6 +152,9 @@ func (c cache) buildUbuntu(ctx context.Context, work string, cfg Config) error {
 		"--run-command", "tar -xzf /tmp/ephemera-runner.tar.gz -C /opt/actions-runner && /opt/actions-runner/bin/installdependencies.sh",
 		"--run-command", "chown -R ephemera-runner:ephemera-runner /opt/actions-runner && chmod 0755 /usr/local/bin/ephemera-runner && chmod 0644 /etc/systemd/system/ephemera-runner.service",
 		"--delete", "/tmp/ephemera-runner.tar.gz",
+		// virt-resize can move the BIOS boot partition, invalidating the
+		// original GRUB core image location recorded in the boot sector.
+		"--run-command", "grub-install --target=i386-pc /dev/sda && update-grub",
 		"--run-command", "cloud-init clean --logs --machine-id"); err != nil {
 		return err
 	}
@@ -175,7 +178,7 @@ func bootCheck(ctx context.Context, temp, disk string, cfg Config) error {
 	console := filepath.Join(temp, "console.log")
 	err := command(ctx, "qemu-system-x86_64", "-machine", "accel=kvm:tcg",
 		"-m", strconv.Itoa(cfg.MemoryMiB), "-smp", strconv.Itoa(cfg.VCPUs),
-		"-display", "none", "-monitor", "none", "-serial", "file:"+console, "-no-reboot",
+		"-boot", "order=c", "-display", "none", "-monitor", "none", "-serial", "file:"+console, "-no-reboot",
 		"-nic", "user,restrict=on,model=virtio-net-pci",
 		"-drive", diskOption(overlay)+",format=qcow2,if=virtio",
 		"-drive", diskOption(seed)+",format=raw,if=virtio,readonly=on")
