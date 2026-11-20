@@ -36,10 +36,81 @@ UNIT
 done
 sed -i 's|ExecStart=/usr/local/bin/ephemera config validate|ExecStart=/bin/false|' "$work/broken/ephemera.service"
 openssl genrsa -traditional -out "$work/key.pem" 2048
-sudo bash scripts/install.sh --bundle "$work/v1" --non-interactive --config configs/ephemera.example.yaml --github-app-key "$work/key.pem"
+real_systemctl=$(command -v systemctl)
+mkdir "$work/wrappers"
+cat > "$work/wrappers/systemctl" <<'WRAPPER'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$CI_WORK/systemctl.log"
+if [[ "$*" == 'enable ephemera.service' && -f "$CI_WORK/fail-enable" ]]; then
+  "$CI_SYSTEMCTL" "$@"
+  "$CI_SYSTEMCTL" is-enabled --quiet ephemera.service
+  sha256sum /etc/ephemera/config.yaml /etc/ephemera/credentials/github-app.pem > "$CI_WORK/first-hashes"
+  echo 'CI: returning failure after enabling service' >&2
+  exit 1
+fi
+exec "$CI_SYSTEMCTL" "$@"
+WRAPPER
+chmod +x "$work/wrappers/systemctl"
+cp configs/ephemera.example.yaml "$work/config.yaml"
+install_cmd=(sudo env "PATH=$work/wrappers:$PATH" "CI_SYSTEMCTL=$real_systemctl" "CI_WORK=$work"
+  bash scripts/install.sh --bundle "$work/v1" --non-interactive --config "$work/config.yaml" --github-app-key "$work/key.pem")
+assert_first_install_rolled_back() {
+  test ! -e /opt/ephemera/current && test ! -L /opt/ephemera/current || return 1
+  test ! -e /etc/systemd/system/ephemera.service && test ! -L /etc/systemd/system/ephemera.service || return 1
+  test ! -L /etc/systemd/system/multi-user.target.wants/ephemera.service
+  if systemctl is-enabled --quiet ephemera.service || systemctl is-active --quiet ephemera.service; then return 1; fi
+  sudo test ! -e /opt/ephemera/transaction
+  sudo sha256sum --check "$work/first-hashes"
+  test "$(sudo stat -c '%a' /etc/ephemera/config.yaml)" = 644
+  test "$(sudo stat -c '%a' /etc/ephemera/credentials)" = 700
+  test "$(sudo stat -c '%a' /etc/ephemera/credentials/github-app.pem)" = 600
+}
+touch "$work/fail-enable"
+if "${install_cmd[@]}" >"$work/enable.log" 2>&1; then
+  echo 'first install unexpectedly succeeded after enable failure' >&2
+  exit 1
+fi
+cat "$work/enable.log"
+grep -F 'CI: returning failure after enabling service' "$work/enable.log"
+grep -F 'install: failed to enable service' "$work/enable.log"
+rm "$work/fail-enable"
+assert_first_install_rolled_back
+
+# Change the candidate unit so an accidental staging operation would change the link.
+cp "$work/v1/ephemera.service" "$work/working.service"
+sed -i '/^ExecStart=/i ExecStartPre=/bin/false' "$work/v1/ephemera.service"
+staged_before=$(readlink /opt/ephemera/staged)
+cp "$work/systemctl.log" "$work/systemctl.before"
+sed -i 's/max_concurrent: 2/max_concurrent: 3/' "$work/config.yaml"
+if "${install_cmd[@]}" >"$work/mismatch.log" 2>&1; then
+  echo 'first install unexpectedly accepted different inputs' >&2
+  exit 1
+fi
+cat "$work/mismatch.log"
+grep -F 'configuration does not match the saved configuration' "$work/mismatch.log"
+test "$(readlink /opt/ephemera/staged)" = "$staged_before"
+cmp "$work/systemctl.before" "$work/systemctl.log"
+assert_first_install_rolled_back
+cp configs/ephemera.example.yaml "$work/config.yaml"
+
+if "${install_cmd[@]}" >"$work/restart.log" 2>&1; then
+  echo 'first install unexpectedly succeeded after restart failure' >&2
+  exit 1
+fi
+cat "$work/restart.log"
+grep -F 'install: service failed to become ready' "$work/restart.log"
+assert_first_install_rolled_back
+
+cp "$work/working.service" "$work/v1/ephemera.service"
+"${install_cmd[@]}"
+test "$(ephe version)" = "v0.1.0 $commit"
+systemctl is-enabled --quiet ephemera.service
+sudo sha256sum --check "$work/first-hashes"
 ephe help
 ephe image prepare --help
 systemctl is-active --quiet ephemera.service
+ephe status --json | python3 -c 'import json, sys; report = json.load(sys.stdin); assert report["service"]["state"] == "active" and report["daemon"] is None, report'
 before=$(sudo sha256sum /etc/ephemera/config.yaml /etc/ephemera/credentials/github-app.pem)
 start=$(systemctl show -p ActiveEnterTimestampMonotonic --value ephemera.service)
 for tag in v0.1.1 v0.1.2; do
