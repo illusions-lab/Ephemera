@@ -3,6 +3,11 @@
 set -euo pipefail
 work=$(mktemp -d)
 cleanup() {
+  local status=$?
+  if (( status != 0 )); then
+    sudo journalctl -u ephemera.service -u ephemera-ci-apply.service -n 100 --no-pager || true
+    systemctl cat ephemera.service || true
+  fi
   if [[ -f "$work/hosts" ]]; then
     sudo systemctl stop ephemera-ci-github.service || true
     sudo cp "$work/hosts" /etc/hosts
