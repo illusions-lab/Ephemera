@@ -76,7 +76,7 @@ Ephemera is designed to support multiple operating systems and CPU architectures
 
 | Guest OS | AMD64 | ARM64 | Backend |
 |---|---|---|---|
-| Linux | Planned | Planned | QEMU/KVM, Tart |
+| Linux | QEMU/KVM execution behind an opt-in | Planned | QEMU/KVM, Tart |
 | Windows | Planned | Experimental target | QEMU |
 | macOS | Not currently targeted | Planned | Tart |
 
@@ -89,44 +89,17 @@ Ephemera is designed to support multiple operating systems and CPU architectures
 
 ## Architecture
 
-Ephemera follows a minimal, modular architecture with two primary components.
+The current Linux daemon prepares and verifies an Ubuntu amd64 runner image
+and monitors GitHub Runner Scale Set demand. When execution is enabled,
+one daemon coordinates demand and the lifecycle of QEMU runner VMs on the
+host. QEMU/KVM on
+Linux is the first execution backend. Tart on Apple Silicon is planned for
+macOS arm64 guests, with Linux arm64 guests as a later target. The shared
+lifecycle covers provisioning, runner bootstrap, and cleanup. Each backend
+handles its own guest storage and startup.
 
-### Control Plane
-
-Responsible for:
-
-- GitHub App authentication
-- Runner Scale Set management
-- Job demand monitoring
-- Runner scheduling and capacity management
-- VM lifecycle coordination
-- Cleanup and failure recovery
-
-### Host Agent
-
-A lightweight agent running on each virtualization host.
-
-Responsible for:
-
-- Managing local virtualization backends
-- Provisioning VMs from golden images
-- Injecting runner configurations
-- Monitoring VM state
-- Destroying completed or abandoned runner environments
-
-The control plane and host agent are designed to run on the same machine or across multiple hosts.
-
-### Virtualization Backends
-
-**QEMU/KVM**
-
-Provides Linux and Windows virtual machines, including disk copy-on-write support and cross-architecture emulation.
-
-**Tart**
-
-Provides lightweight macOS and Linux ARM64 virtual machines on Apple Silicon.
-
-The backend architecture is designed to remain extensible as additional virtualization technologies become available.
+See [the architecture document](ARCHITECTURE.md#runner-execution-design)
+for scheduling, backend responsibilities, recovery, and implementation order.
 
 ## Design Philosophy
 
@@ -185,8 +158,9 @@ command. `--bundle DIR` supports offline and development installations.
 
 Use `--version TAG` to pin a release or `--bundle DIR` to use
 a local bundle. For an Ubuntu amd64 bundle from source, run
-`make bundle-linux` and pass `--bundle bin/bundle`. The service currently
-observes GitHub job demand. Running jobs in ephemeral VMs is still pending.
+`make bundle-linux` and pass `--bundle bin/bundle`. The service observes
+GitHub job demand by default. Linux amd64 hosts with KVM can opt in to
+QEMU execution.
 
 For automated deployment, provide a configuration and private key. This
 mode applies the configuration and starts the service during installation:
@@ -196,7 +170,13 @@ sudo bash scripts/install.sh --non-interactive \
   --config /path/to/config.yaml --github-app-key /path/to/github-app.pem
 ```
 
-On repeat installs, omit the configuration and key arguments to reuse
+If enabling or starting the service fails during the first install, the
+installer rolls back the service and version and keeps the configuration
+and private key. Fix the failure, then rerun the same command with the
+original configuration and key. The installer checks both inputs against
+the saved files before staging the release.
+
+On upgrades, omit the configuration and key arguments to reuse
 the installed files. Interactive installs leave service activation to
 the setup wizard. Non-interactive upgrades restart the service.
 
@@ -273,6 +253,21 @@ For command-line image preparation, run `sudo ephemera image prepare`
 on an Ubuntu amd64 host with the [image build tools](#runner-images-and-readiness)
 installed.
 
+## Service status and diagnostics
+
+Run `ephe status` to see the systemd service state, daemon startup phase,
+GitHub connection, job intake mode, and the latest GitHub job counts. Use
+`ephe status --watch` to follow startup or `ephe status --json` for scripts.
+With both flags, each refresh writes one JSON object per line. When the daemon
+socket is offline, status shows the available systemd information and marks
+live daemon data as unavailable.
+
+Run `sudo ephe doctor` to check the installed configuration, GitHub App key
+and runner permissions, Scale Set, image cache, QEMU/KVM, and disk space. Root
+access lets it read the protected key and image cache. The GitHub probe checks
+the configured Scale Set without creating one or consuming jobs. It exits
+with an error if any required check fails.
+
 ## Development
 
 Run `make` for the target list. `make build` builds the local CLI and daemon,
@@ -335,6 +330,40 @@ job offers unclaimed. Add `--claim` only for a dedicated test Scale Set with
 logs. Cancel the test workflow after confirming the intake because this
 command has no runner backend.
 
+### Test QEMU execution
+
+Use one Linux amd64 host with KVM and one dedicated Scale Set. Give the
+`ephemera` service account access to KVM, install the image preparation tools,
+and configure the host firewall or upstream network policy to isolate the
+management network from guest traffic. Guests use outbound networking with
+no forwarded host ports. Use trusted workflows on the test Scale Set.
+
+Set `runner.execute: true` in `/etc/ephemera/config.yaml` and restart
+`ephemera.service`. Set `runner.max_concurrent: 2` for overlap testing.
+The packaged unit runs as `ephemera` and uses `/var/lib/ephemera/instances`
+for instance records, overlays, and private cloud-init seeds. If libguestfs
+cannot access an appliance kernel as the service account, prepare the
+configured image as an administrator before starting the service and make
+the cache accessible to `ephemera`.
+
+Use the [manual acceptance workflow](.github/workflows/execution-acceptance.yml)
+with the dedicated Scale Set label. Use `ephe status --watch` to observe
+launch, readiness, execution, and cleanup.
+
+1. Run one job, then repeat with overlap enabled. Both overlapping jobs
+   should report different runner names, instance IDs, and boot IDs.
+2. On the disposable host, exercise a startup or JIT registration failure
+   and restore the failing dependency. Verify retry and eventual cleanup.
+3. Restart the daemon while a job is active to exercise the shutdown drain.
+   Repeat with an abrupt termination of the daemon on the disposable host.
+   Verify that intake pauses during recovery, leftover resources are removed,
+   and a subsequent job completes.
+4. Inject a transient cleanup failure and restore access. Verify that the
+   instance stays in pending cleanup, occupies a slot, and is retried.
+5. After each case, compare the base disk SHA-256 with the verified cache
+   manifest, check for leftover QEMU processes and per-instance state, and
+   confirm the GitHub Scale Set has no stale runner registrations.
+
 ### Runner images and readiness
 
 Set `vm.image` to `ubuntu` or `windows`, and `vm.arch` to `amd64` or
@@ -384,13 +413,14 @@ Scale Set before relying on that routing.
 
 - [x] GitHub App authentication
 - [x] GitHub Runner Scale Set integration for job intake
-- [ ] Ephemeral runner lifecycle management
-- [ ] QEMU/KVM backend (image boot check implemented; job VM lifecycle pending)
+- [x] Ephemeral runner lifecycle management
+- [x] QEMU/KVM runner lifecycle
+- [ ] QEMU/KVM acceptance on a dedicated test Scale Set
 - [ ] Linux AMD64 runner support
 - [ ] Windows AMD64 runner support
-- [ ] Golden image management (Ubuntu AMD64 preparation and caching implemented; end-to-end boot verification pending)
-- [ ] Copy-on-write VM provisioning
-- [ ] Automatic cleanup and crash recovery
+- [x] Ubuntu AMD64 golden image preparation, caching, and offline boot verification
+- [x] Copy-on-write VM provisioning
+- [x] Automatic cleanup and crash recovery
 - [ ] Remote host agents
 - [ ] Tart backend
 - [ ] macOS ARM64 runner support

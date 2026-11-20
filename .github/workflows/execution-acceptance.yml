@@ -1,0 +1,38 @@
+name: Dedicated Scale Set acceptance
+on:
+  workflow_dispatch:
+    inputs:
+      scale_set:
+        description: Runner label of the dedicated test Scale Set
+        required: true
+        type: string
+      overlap:
+        description: Run two overlapping jobs
+        default: false
+        type: boolean
+
+permissions: {}
+
+jobs:
+  guest:
+    runs-on: ${{ inputs.scale_set }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        job: ${{ fromJSON(inputs.overlap && '[1,2]' || '[1]') }}
+    steps:
+      - name: Record guest identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          boot_id=$(cat /proc/sys/kernel/random/boot_id)
+          instance_id=$(cloud-init query instance_id)
+          [[ "$instance_id" =~ ^[0-9a-f-]{36}$ ]]
+          [[ "$RUNNER_NAME" == "ephemera-$instance_id" ]]
+          {
+            printf 'Runner %s\n\n' "$RUNNER_NAME"
+            printf 'Instance %s\n\n' "$instance_id"
+            printf 'Boot %s\n' "$boot_id"
+          } >> "$GITHUB_STEP_SUMMARY"
+          sleep 60
