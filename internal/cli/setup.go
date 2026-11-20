@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 func runSetup(args []string) error {
 	flags := flag.NewFlagSet("setup", flag.ContinueOnError)
 	nonInteractive := flags.Bool("non-interactive", false, "read configuration and key from files")
+	resume := flags.Bool("resume", false, "verify existing configuration and key for an installation retry")
 	source := flags.String("config", "", "source YAML configuration")
 	keyPath := flags.String("github-app-key", "", "source GitHub App PEM file")
 	appName := flags.String("app-name", "", "prefill the name of the GitHub App to create")
@@ -29,6 +31,9 @@ func runSetup(args []string) error {
 	}
 	if flags.NArg() != 0 {
 		return errors.New("unexpected arguments to setup")
+	}
+	if *resume && !*nonInteractive {
+		return errors.New("--resume requires --non-interactive")
 	}
 	if *appName != "" && (*existingApp || *nonInteractive) {
 		return errors.New("--app-name requires interactive GitHub App creation")
@@ -60,14 +65,6 @@ func runSetup(args []string) error {
 		return errors.New("run setup with sudo to write the system configuration")
 	}
 	destination := filepath.Join(config.Dir, "config.yaml")
-	if _, err := os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
-		if err != nil {
-			return err
-		}
-		if *nonInteractive {
-			return fmt.Errorf("configuration already exists at %s", destination)
-		}
-	}
 
 	if !*nonInteractive {
 		if !term.IsTerminal(os.Stdin.Fd()) || !term.IsTerminal(os.Stdout.Fd()) {
@@ -75,11 +72,31 @@ func runSetup(args []string) error {
 		}
 		return setup.Run(destination, *appName, *existingApp)
 	}
-	cfg, err := config.Load(*source)
+	if err := setupFromFiles(config.Dir, *source, *keyPath, *resume); err != nil {
+		return err
+	}
+	if *resume {
+		fmt.Println("Configuration and key verified for installation retry")
+	} else {
+		fmt.Println("Configuration saved to", destination)
+	}
+	return nil
+}
+
+func setupFromFiles(dir, source, keyPath string, resume bool) error {
+	destination := filepath.Join(dir, "config.yaml")
+	if !resume {
+		if _, err := os.Lstat(destination); err == nil {
+			return fmt.Errorf("configuration already exists at %s", destination)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	cfg, err := config.Load(source)
 	if err != nil {
 		return err
 	}
-	key, err := config.ReadKey(*keyPath)
+	key, err := config.ReadKey(keyPath)
 	if err != nil {
 		return err
 	}
@@ -87,9 +104,34 @@ func runSetup(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := config.WriteSetup(config.Dir, data, key); err != nil {
+	if !resume {
+		return config.WriteSetup(dir, data, key)
+	}
+	saved, err := config.Load(destination)
+	if err != nil {
 		return err
 	}
-	fmt.Println("Configuration saved to", destination)
+	savedData, err := yaml.Marshal(saved)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(data, savedData) {
+		return errors.New("configuration does not match the saved configuration")
+	}
+	savedKeyPath := filepath.Join(dir, "credentials", "github-app.pem")
+	info, err := os.Lstat(savedKeyPath)
+	if err != nil {
+		return err
+	}
+	if info.Mode() != 0600 {
+		return errors.New("saved GitHub App key must be a regular file with mode 0600")
+	}
+	savedKey, err := os.ReadFile(savedKeyPath)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(key, savedKey) {
+		return errors.New("GitHub App key does not match the saved key")
+	}
 	return nil
 }

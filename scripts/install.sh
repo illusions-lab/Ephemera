@@ -68,6 +68,10 @@ rollback() {
   local failed=false
   # Cancel any start job left behind by an interrupted installer.
   if [[ -f "$unit" ]]; then systemctl stop ephemera.service 9>&- || failed=true; fi
+  if [[ -f "$txn/disable" ]]; then
+    systemctl disable ephemera.service || die 'failed to undo service enablement; transaction and candidate unit retained for recovery'
+    rm -f "$txn/disable"
+  fi
   if [[ -f "$txn/previous" ]]; then atomic_link "$(cat "$txn/previous")" "$current" || failed=true; else rm -f "$current" || failed=true; fi
   if [[ -f "$txn/unit" ]]; then install -m 0644 "$txn/unit" "$unit" || failed=true; else rm -f "$unit" || failed=true; fi
   systemctl daemon-reload || failed=true
@@ -80,9 +84,23 @@ rollback() {
 }
 rollback
 first=true
+resume=false
 [[ -e "$destination" || -L "$destination" ]] && first=false
 if ! "$first"; then
-  [[ -z "$config" ]] || die 'configuration already exists; omit input files'
+  installed=false
+  if [[ -e "$current" || -L "$current" || -e "$unit" || -L "$unit" ]]; then installed=true; fi
+  for binary in ephemera ephemerad; do
+    path=/usr/local/bin/$binary
+    if [[ -e "$path" || -L "$path" ]]; then
+      if [[ ! -L "$path" || "$(readlink "$path")" != "$current/$binary" ]]; then installed=true; fi
+    fi
+  done
+  if "$installed"; then
+    [[ -z "$config" ]] || die 'installation already exists; omit input files'
+  elif "$non_interactive"; then
+    [[ -n "$config" ]] || die 'first install retry requires the original config and key'
+    resume=true
+  fi
   [[ -f "$credential" && ! -L "$credential" && "$(stat -c '%u:%a' "$credential")" == 0:600 ]] || die 'invalid GitHub App private key permissions'
 fi
 temp=$(mktemp -d "$root/.install.XXXXXXXX")
@@ -119,9 +137,11 @@ if [[ "$mode" != apply ]]; then
   identity=$("$temp/ephemera" version)
   [[ "$identity" == "$("$temp/ephemerad" --version)" ]] || die 'binary versions or commits differ'
   [[ -z "$version" || "${identity%% *}" == "$version" ]] || die 'bundle version does not match release tag'
-  if "$first" && "$non_interactive"; then
+  if "$non_interactive" && { "$first" || "$resume"; }; then
     [[ -r "$config" && -r "$key" ]] || die 'first install requires readable config and key'
-    "$temp/ephemera" setup --non-interactive --config "$config" --github-app-key "$key"
+    setup_args=(--non-interactive --config "$config" --github-app-key "$key")
+    if "$resume"; then setup_args+=(--resume); fi
+    "$temp/ephemera" setup "${setup_args[@]}"
   fi
   [[ ! -f "$destination" ]] || "$temp/ephemera" config validate --config "$destination"
   # The content hash keeps development bundles and repeated versions distinct.
@@ -176,7 +196,10 @@ if "$first" && ! "$non_interactive" && [[ "$mode" == install ]]; then
   fi
   exit 0
 fi
-if "$non_interactive"; then systemctl enable ephemera.service || { rollback; die 'failed to enable service'; }; fi
+if "$non_interactive"; then
+  if [[ ! -f "$txn/previous" && ! -f "$txn/unit" ]]; then touch "$txn/disable"; fi
+  systemctl enable ephemera.service || { rollback; die 'failed to enable service'; }
+fi
 if ! systemctl restart ephemera.service 9>&- || ! systemctl is-active --quiet ephemera.service; then
   rollback; die 'service failed to become ready; previous installation restored'
 fi

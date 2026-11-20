@@ -196,7 +196,13 @@ sudo bash scripts/install.sh --non-interactive \
   --config /path/to/config.yaml --github-app-key /path/to/github-app.pem
 ```
 
-On repeat installs, omit the configuration and key arguments to reuse
+If enabling or starting the service fails during the first install, the
+installer rolls back the service and version and keeps the configuration
+and private key. Fix the failure, then rerun the same command with the
+original configuration and key. The installer checks both inputs against
+the saved files before staging the release.
+
+On upgrades, omit the configuration and key arguments to reuse
 the installed files. Interactive installs leave service activation to
 the setup wizard. Non-interactive upgrades restart the service.
 
