@@ -106,3 +106,16 @@ systemctl is-active --quiet ephemera.service
 sudo test ! -e /opt/ephemera/transaction
 sudo ephe update --apply
 test "$(ephe version)" = "v0.1.0 $commit"
+
+# A timed-out candidate must leave a previously stopped service stopped.
+sudo systemctl stop ephemera.service
+sudo install -d /var/lib/ephemera/image
+printf 'cache sentinel\n' | sudo tee /var/lib/ephemera/image/ci-sentinel >/dev/null
+cache_before=$(sudo sha256sum /var/lib/ephemera/image/ci-sentinel)
+sudo bash scripts/install.sh --bundle "$work/interrupted"
+if sudo ephe update --apply; then echo 'timed-out update unexpectedly succeeded' >&2; exit 1; fi
+test "$(ephe version)" = "v0.1.0 $commit"
+test "$(systemctl show -p ActiveState --value ephemera.service)" = inactive
+sudo test ! -e /opt/ephemera/transaction
+test "$before" = "$(sudo sha256sum /etc/ephemera/config.yaml /etc/ephemera/credentials/github-app.pem)"
+test "$cache_before" = "$(sudo sha256sum /var/lib/ephemera/image/ci-sentinel)"
