@@ -37,7 +37,8 @@ latest_version() {
 if [[ "$mode" == check ]]; then
   printf 'Current: '; if [[ -x "$current/ephemera" ]]; then "$current/ephemera" version; elif command -v ephemera >/dev/null; then ephemera version || true; else echo none; fi
   printf 'Staged: '; if [[ -x "$staged/ephemera" ]]; then "$staged/ephemera" version; else echo none; fi
-  printf 'Latest: %s\n' "$(latest_version)"
+  latest=$(latest_version)
+  printf 'Latest: %s\n' "$latest"
   exit
 fi
 [[ "$(uname -s)" == Linux && "$EUID" -eq 0 ]] || die 'installation requires Linux and root'
@@ -54,7 +55,7 @@ rollback() {
   if [[ -f "$txn/previous" ]]; then atomic_link "$(cat "$txn/previous")" "$current" || failed=true; else rm -f "$current" || failed=true; fi
   if [[ -f "$txn/unit" ]]; then install -m 0644 "$txn/unit" "$unit" || failed=true; else rm -f "$unit" || failed=true; fi
   systemctl daemon-reload || failed=true
-  if [[ -f "$txn/active" ]]; then systemctl restart ephemera.service || failed=true; else systemctl stop ephemera.service || failed=true; fi
+  if [[ -f "$txn/active" ]]; then systemctl restart ephemera.service 9>&- || failed=true; else systemctl stop ephemera.service 9>&- || failed=true; fi
   if "$failed"; then die 'rollback failed; transaction and releases retained for repair'; fi
   rm -rf "$txn"
 }
@@ -65,7 +66,7 @@ if ! "$first"; then
   [[ -z "$config" ]] || die 'configuration already exists; omit input files'
   [[ -f "$credential" && ! -L "$credential" && "$(stat -c '%u:%a' "$credential")" == 0:600 ]] || die 'invalid GitHub App private key permissions'
 fi
-temp=$(mktemp -d)
+temp=$(mktemp -d "$root/.install.XXXXXXXX")
 trap 'rm -rf -- "$temp"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -147,7 +148,7 @@ if "$first" && ! "$non_interactive" && [[ "$mode" == install ]]; then
   printf 'Ephemera installed. Run sudo ephe setup to configure and start it.\n'; exit 0
 fi
 if "$non_interactive"; then systemctl enable ephemera.service || { rollback; die 'failed to enable service'; }; fi
-if ! systemctl restart ephemera.service || ! systemctl is-active --quiet ephemera.service; then
+if ! systemctl restart ephemera.service 9>&- || ! systemctl is-active --quiet ephemera.service; then
   rollback; die 'service failed to become ready; previous installation restored'
 fi
 rm -rf "$txn"; rm -f "$staged"

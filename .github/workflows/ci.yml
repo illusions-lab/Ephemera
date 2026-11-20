@@ -28,7 +28,7 @@ jobs:
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [check, ubuntu-install]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     concurrency:
@@ -42,11 +42,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Require Ubuntu pre-release verification
-        env:
-          VERIFIED: ${{ vars.EPHEMERA_SYSTEMD_VERIFIED }}
-        run: |
-          test "$VERIFIED" = true || { echo "Complete Ubuntu systemd and Ubuntu image verification, then set EPHEMERA_SYSTEMD_VERIFIED=true." >&2; exit 1; }
       - name: Allocate tag
         id: tag
         run: scripts/release-tag.sh
@@ -56,36 +51,54 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          if gh release view "$TAG" --json isDraft --jq '.isDraft' > /tmp/ephemera-release-state 2>/dev/null; then
-            if [ "$(cat /tmp/ephemera-release-state)" = false ]; then echo 'published=true' >> "$GITHUB_OUTPUT"; else gh release delete "$TAG" --yes; fi
-          fi
+          releases=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[] | [.tag_name, .draft] | @tsv')
+          state=$(awk -v tag="$TAG" '$1 == tag { print $2; exit }' <<< "$releases")
+          case "$state" in
+            false) echo 'published=true' >> "$GITHUB_OUTPUT" ;;
+            true) echo 'draft=true' >> "$GITHUB_OUTPUT" ;;
+          esac
       - uses: goreleaser/goreleaser-action@v6
-        if: steps.existing.outputs.published != 'true'
+        if: steps.existing.outputs.published != 'true' && steps.existing.outputs.draft != 'true'
         with:
           distribution: goreleaser
-          version: '~> v2'
+          version: v2.12.7
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          GORELEASER_CURRENT_TAG: ${{ steps.tag.outputs.tag }}
       - name: Verify release bundle
         if: steps.existing.outputs.published != 'true'
         env:
           TAG: ${{ steps.tag.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          cd dist
+          mkdir -p "$RUNNER_TEMP/release"
+          gh release download "$TAG" --dir "$RUNNER_TEMP/release" \
+            --pattern ephemera_linux_amd64.tar.gz --pattern checksums.txt --pattern install.sh
+          cd "$RUNNER_TEMP/release"
           sha256sum -c checksums.txt
           mkdir verify
           tar -xzf ephemera_linux_amd64.tar.gz -C verify
-          test -s verify/ephemera.service && test -s verify/install.sh
+          test -s verify/ephemera.service && cmp install.sh verify/install.sh
           test "$(verify/ephemera version)" = "$TAG $GITHUB_SHA"
           test "$(verify/ephemerad --version)" = "$TAG $GITHUB_SHA"
+      - name: Install image preparation tools
+        if: steps.existing.outputs.published != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils libguestfs-tools cloud-image-utils linux-image-generic
+      - name: Verify packaged daemon and runner image
+        if: steps.existing.outputs.published != 'true'
+        timeout-minutes: 45
+        run: scripts/ci-release-test.sh "$RUNNER_TEMP/release/verify"
       - name: Publish verified draft
         if: steps.existing.outputs.published != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          latest=$(gh release list --exclude-drafts --exclude-pre-releases --limit 1000 --json tagName --jq '.[].tagName' | grep -E '^v0\.1\.[0-9]+$' | sort -V | tail -n1 || true)
+          published=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')
+          latest=$(printf '%s\n' "$published" | grep -E '^v0\.1\.[0-9]+$' | sort -V | tail -n1 || true)
           if [ -n "$latest" ] && [ "$(printf '%s\n%s\n' "$TAG" "$latest" | sort -V | tail -n1)" != "$TAG" ]; then
             gh release edit "$TAG" --draft=false --latest=false
           else

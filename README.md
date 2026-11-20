@@ -370,4 +370,7 @@ See [LICENSE](LICENSE) for details.
 
 **Ephemera — Run. Finish. Vanish.**
 
-Before the first production release, verify the release bundle on Ubuntu amd64 with a real systemd service and Ubuntu image preparation, then set the GitHub Actions repository variable `EPHEMERA_SYSTEMD_VERIFIED` to `true`. The release job remains blocked until this acceptance test is complete. Production tags and releases are created only by GitHub Actions.
+GitHub Actions verifies the packaged daemon on Ubuntu 24.04 amd64 with
+systemd, a local GitHub API fixture, and a real runner image build and boot
+check before publishing the draft. Production tags and releases are created
+by GitHub Actions.
