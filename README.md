@@ -155,42 +155,69 @@ Ephemera builds upon established open-source technologies:
 **We recommend Debian with systemd. We have not tested installation on
 operating systems other than Debian.**
 
-`scripts/install.sh` is the one-command installation entry point. It
-downloads the release for your architecture, checks its SHA-256 digest,
-and opens the setup wizard on first install. The wizard asks for your
-GitHub repository or organization URL, scale set name, GitHub App and
-installation IDs, private key file, and concurrency limit. The wizard
-selects the currently implemented runner image, Ubuntu amd64.
-You can optionally pin the release with `--version TAG`.
+Install a release and register the systemd service:
 
 ```bash
 sudo bash scripts/install.sh
+sudo ephe setup
 ```
 
-For automated deployment, supply your own configuration and private key.
-Use `--bundle DIR` to install an unpacked release instead of downloading it.
+The installer checks the release checksum and installs `ephemera`, `ephemerad`, and the
+`ephe` alias. Use `--version TAG` to pin a release or `--bundle DIR` to use
+a local bundle. For a Debian amd64 bundle from source, run
+`make bundle-linux` and pass `--bundle bin/bundle`. The service currently
+observes GitHub job demand. Running jobs in ephemeral VMs is still pending.
+
+For automated deployment, provide a configuration and private key. This
+mode applies the configuration and starts the service during installation:
 
 ```bash
 sudo bash scripts/install.sh --non-interactive \
   --config /path/to/config.yaml --github-app-key /path/to/github-app.pem
 ```
 
-Repeat installs reuse the installed configuration and credential. They
-restart the service, so schedule upgrades between jobs. To change settings,
-edit `/etc/ephemera/config.yaml` and run `ephemera config validate` before
-restarting the service.
+On repeat installs, omit the configuration and key arguments to reuse
+the installed files. Interactive installs leave service activation to
+the setup wizard. Non-interactive upgrades restart the service.
 
-Release installation will be available once the control-plane daemon and
-its production unit are published. The installer expects a GitHub Actions
-release containing `checksums.txt` and an
-`ephemera_linux_<arch>.tar.gz` with `ephemera` and `ephemera.service` at
-its root. The setup CLI and installer can already be exercised locally
-with the Debian smoke test below.
+## Setup and image selection
+
+`sudo ephe setup` and `sudo ephemera setup` open the same wizard.
+
+- **Edit configuration** creates or edits `/etc/ephemera/config.yaml`.
+  Review the settings summary before saving.
+- **Prepare a golden image** builds and checks an image independently of
+  the running service. After success, choose whether to use it in your
+  saved configuration.
+- **Apply configuration and start or restart service** activates the
+  saved configuration after confirmation.
+
+The image menu starts with **Ephemera presets**. On first use it
+preselects Ubuntu amd64. Later visits start with your configured image
+and architecture. The presets include Ubuntu and Windows for amd64 and
+arm64. Ubuntu amd64 is the implemented recipe.
+
+Open **GitHub runner images** to browse the bundled snapshot of the
+official image catalog, including aliases for Ubuntu, Windows, macOS and
+Xcode. Select an entry to see whether it can be prepared. The Ubuntu
+24.04 amd64 entry and its `ubuntu-latest` alias use Ephemera's Ubuntu
+recipe, which installs the GitHub runner and its dependencies. Matching
+the full hosted runner toolset requires a separate recipe.
+[GitHub's official image catalog](https://github.com/actions/runner-images#available-images)
+
+The image tag remains version-free, for example `ubuntu` with
+`arch: amd64`. When you save the GitHub catalog selection, Ephemera
+records the resolved profile and pinned source in the configuration.
+Preparing or saving an image keeps the current service running.
+
+For command-line image preparation, run `sudo ephemera image prepare`
+on a Debian amd64 host with the [image build tools](#runner-images-and-readiness)
+installed.
 
 ## Development
 
-Run `make` for the target list. `make build` builds the local CLI,
-`make build-linux` builds a Linux amd64 binary, and `make check` runs
+Run `make` for the target list. `make build` builds the local CLI and daemon,
+`make build-linux` builds both Linux amd64 binaries, and `make check` runs
 Go tests, vet, shell syntax checks, ShellCheck, and configuration
 validation. Use `make config-check CONFIG=/path/to/config.yaml` to
 validate a specific file.
@@ -225,8 +252,8 @@ print the SSH command for the retained VM.
 installer with a systemd fixture unit. The test generates a disposable
 RSA key, installs twice, checks that the config and key are preserved,
 and verifies that systemd can restart the unit. For an externally
-built bundle, pass `--bundle DIR` containing a Linux amd64 `ephemera`
-binary, a test `ephemera.service`, and a secret-free `config.yaml`.
+built bundle, pass `--bundle DIR` containing Linux amd64 `ephemera` and
+`ephemerad` binaries, a test `ephemera.service`, and a secret-free `config.yaml`.
 
 ### Test GitHub job intake
 
@@ -236,7 +263,7 @@ Build the CLI and start an observation session against that Scale Set:
 
 ```bash
 make build
-bin/ephemera orders listen --config ./test-config.yaml \
+bin/ephemerad --config ./test-config.yaml \
   --github-app-key /path/to/github-app.pem --create
 ```
 
@@ -259,7 +286,7 @@ their build and boot recipes are available. For older configs, add
 managed image.
 
 The recipe uses pinned Ubuntu 24.04 and GitHub runner releases. Override
-both source pins under `images.ubuntu.amd64` with `base_url`,
+both source pins under `image.ubuntu.amd64` with `base_url`,
 `base_sha256`, `runner_version`, and `runner_sha256`. The image tag and
 the Scale Set name can stay the same after a source update.
 
@@ -275,10 +302,10 @@ The preparation step verifies both downloads, assembles a standalone
 qcow2, and boots a disposable overlay to check the runner binary and
 systemd unit. Each job VM will start the guest unit after receiving its
 one-time JIT config at `/run/ephemera/jitconfig`. The listener caches validated disks under
-`/var/lib/ephemera/images`. The Make target uses `bin/images` for local
+`/var/lib/ephemera/image`. The Make target uses `bin/image` for local
 development. Override its directory with `IMAGE_CACHE=/path/to/cache`.
 
-`orders listen` prepares the selected image before opening the GitHub
+`ephemerad` prepares the selected image before opening the GitHub
 session. It reports `Healthy` after reading the initial session
 statistics and checking that the disk is available. Under a systemd
 `Type=notify` service it also sends `READY=1` at that point. Allow more
