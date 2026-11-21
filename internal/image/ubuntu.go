@@ -14,10 +14,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/illusions-lab/Ephemera/internal/qemuplatform"
 )
 
 const DefaultCache = "/var/lib/ephemera/image"
@@ -42,10 +45,14 @@ func Prepare(ctx context.Context, root string, cfg Config, logger *slog.Logger) 
 	if err := cfg.Source.Validate(); err != nil {
 		return Image{}, err
 	}
-	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
-		return Image{}, errors.New("ubuntu/amd64 image preparation requires a Linux amd64 host")
+	if runtime.GOOS != "linux" || runtime.GOARCH != cfg.Platform.Arch {
+		return Image{}, fmt.Errorf("%s image preparation requires a Linux %s host", cfg.Platform, cfg.Platform.Arch)
 	}
-	if _, err := exec.LookPath("qemu-system-x86_64"); err != nil {
+	platform, _ := qemuplatform.ForArch(cfg.Platform.Arch)
+	if err := platform.CheckFirmware(); err != nil {
+		return Image{}, err
+	}
+	if _, err := exec.LookPath(platform.Binary); err != nil {
 		return Image{}, err
 	}
 	root, err := filepath.Abs(root)
@@ -100,6 +107,9 @@ func imageCacheKey(cfg Config) (string, error) {
 	hash := sha256.New()
 	io.WriteString(hash, "ubuntu-image-recipe-v4\x00")
 	hash.Write(recipe)
+	if cfg.Platform.Arch == "arm64" {
+		io.WriteString(hash, "arm64-uefi-v3\x00")
+	}
 	io.WriteString(hash, runnerUnit+runnerLauncher+bootConfig+RunnerCloudConfig(""))
 	return cfg.Platform.Tag + "-" + cfg.Platform.Arch + "-" + hex.EncodeToString(hash.Sum(nil)), nil
 }
@@ -164,6 +174,9 @@ write_files:
 var bootConfig = runnerCloudConfig("ephemera-offline-smoke", true)
 
 func (c cache) buildUbuntu(ctx context.Context, work string, cfg Config) error {
+	platform, _ := qemuplatform.ForArch(cfg.Platform.Arch)
+	rootPartition := "/dev/sda1"
+	bootInstall := "grub-install --target=i386-pc /dev/sda && update-grub"
 	for _, name := range []string{"qemu-img", "virt-resize", "virt-customize", "cloud-localds"} {
 		if _, err := exec.LookPath(name); err != nil {
 			return err
@@ -174,7 +187,18 @@ func (c cache) buildUbuntu(ctx context.Context, work string, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("prepare base disk: %w", err)
 	}
-	runner, err := c.download(ctx, cfg.Source.runnerURL(), cfg.Source.RunnerSHA256)
+	if cfg.Platform.Arch == "arm64" {
+		out, err := exec.CommandContext(ctx, "guestfish", "--ro", "--format=qcow2", "-a", base, "run", ":", "inspect-os").Output()
+		if err != nil {
+			return fmt.Errorf("inspect ARM64 root partition: %w", err)
+		}
+		rootPartition = strings.TrimSpace(string(out))
+		if !regexp.MustCompile(`^/dev/sda[0-9]+$`).MatchString(rootPartition) {
+			return errors.New("expected one ARM64 root partition")
+		}
+		bootInstall = "mountpoint -q /boot/efi && (test -f /boot/efi/EFI/BOOT/BOOTAA64.EFI || grub-install --target=arm64-efi --efi-directory=/boot/efi --removable --no-nvram) && systemctl mask serial-getty@hvc0.service"
+	}
+	runner, err := c.download(ctx, cfg.Source.runnerURL(cfg.Platform.Arch), cfg.Source.RunnerSHA256)
 	if err != nil {
 		return fmt.Errorf("prepare GitHub runner: %w", err)
 	}
@@ -184,7 +208,7 @@ func (c cache) buildUbuntu(ctx context.Context, work string, cfg Config) error {
 	}
 	defer os.RemoveAll(temp)
 	for name, content := range map[string]string{
-		"runner.service": runnerUnit, "runner-launcher": runnerLauncher,
+		"runner.service": strings.Replace(runnerUnit, "/dev/ttyS1", platform.Serial, 1), "runner-launcher": runnerLauncher,
 		"user-data": bootConfig, "meta-data": "instance-id: ephemera-image-validation\n",
 	} {
 		if err := os.WriteFile(filepath.Join(temp, name), []byte(content), 0600); err != nil {
@@ -199,13 +223,17 @@ func (c cache) buildUbuntu(ctx context.Context, work string, cfg Config) error {
 		return err
 	}
 	if err := command(ctx, "virt-resize", "--format", "qcow2", "--output-format", "qcow2", "--align-first", "never",
-		"--expand", "/dev/sda1", base, disk); err != nil {
+		"--expand", rootPartition, base, disk); err != nil {
 		return err
 	}
 	if err := command(ctx, "virt-customize", "--format", "qcow2", "-a", disk, "--no-logfile",
 		"--upload", runner+":/tmp/ephemera-runner.tar.gz",
 		"--upload", filepath.Join(temp, "runner.service")+":/etc/systemd/system/ephemera-runner.service",
 		"--upload", filepath.Join(temp, "runner-launcher")+":/usr/local/bin/ephemera-runner",
+		// libguestfs bind-mounts its resolver into the guest for commands.
+		// Ubuntu's normal resolver symlink needs the guest's running systemd.
+		"--delete", "/etc/resolv.conf",
+		"--write", "/etc/resolv.conf:",
 		"--install", "ca-certificates,curl,git",
 		"--run-command", "useradd --create-home --shell /bin/bash ephemera-runner && install -d /opt/actions-runner",
 		"--run-command", "tar -xzf /tmp/ephemera-runner.tar.gz -C /opt/actions-runner && /opt/actions-runner/bin/installdependencies.sh",
@@ -213,8 +241,10 @@ func (c cache) buildUbuntu(ctx context.Context, work string, cfg Config) error {
 		"--delete", "/tmp/ephemera-runner.tar.gz",
 		// virt-resize can move the BIOS boot partition, invalidating the
 		// original GRUB core image location recorded in the boot sector.
-		"--run-command", "grub-install --target=i386-pc /dev/sda && update-grub",
-		"--run-command", "cloud-init clean --logs --machine-id && touch /etc/machine-id"); err != nil {
+		"--run-command", bootInstall,
+		"--run-command", "cloud-init clean --logs --machine-id && touch /etc/machine-id",
+		"--delete", "/etc/resolv.conf",
+		"--link", "/run/systemd/resolve/stub-resolv.conf:/etc/resolv.conf"); err != nil {
 		return err
 	}
 	if err := command(ctx, "qemu-img", "check", "-f", "qcow2", disk); err != nil {
@@ -235,12 +265,22 @@ func bootCheck(ctx context.Context, temp, disk string, cfg Config) error {
 		return err
 	}
 	console := filepath.Join(temp, "console.log")
-	err := command(ctx, "qemu-system-x86_64", "-machine", "accel=kvm:tcg",
+	platform, err := qemuplatform.ForArch(cfg.Platform.Arch)
+	if err != nil {
+		return err
+	}
+	boot, err := platform.BootArgs(temp, false)
+	if err != nil {
+		return err
+	}
+	args := []string{
 		"-m", strconv.Itoa(cfg.MemoryMiB), "-smp", strconv.Itoa(cfg.VCPUs),
-		"-boot", "order=c", "-display", "none", "-monitor", "none", "-serial", "null", "-serial", "file:"+console, "-no-reboot",
+		"-display", "none", "-monitor", "none", "-serial", "null", "-serial", "file:" + console, "-no-reboot",
 		"-nic", "user,restrict=on,model=virtio-net-pci",
-		"-drive", diskOption(overlay)+",format=qcow2,if=virtio",
-		"-drive", diskOption(seed)+",format=raw,if=virtio,readonly=on")
+		"-drive", qemuplatform.FileOption(overlay) + ",format=qcow2,if=virtio",
+		"-drive", qemuplatform.FileOption(seed) + ",format=raw,if=virtio,readonly=on"}
+	args = append(args, platform.StatusArgs(console)...)
+	err = command(ctx, platform.Binary, append(args, boot...)...)
 	data, readErr := os.ReadFile(console)
 	if err == nil && readErr == nil {
 		for _, line := range bytes.Split(data, []byte("\n")) {
@@ -250,10 +290,6 @@ func bootCheck(ctx context.Context, temp, disk string, cfg Config) error {
 		}
 	}
 	return fmt.Errorf("Ubuntu boot check failed: %w", errors.Join(err, readErr, errors.New("guest did not complete validation")))
-}
-
-func diskOption(path string) string {
-	return "file=" + strings.ReplaceAll(path, ",", ",,")
 }
 
 func command(ctx context.Context, name string, args ...string) error {

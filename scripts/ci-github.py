@@ -7,7 +7,7 @@ import ssl
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 root = pathlib.Path(sys.argv[1])
 
@@ -43,7 +43,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path.rstrip("/")
         if path.endswith("/runnerscalesets"):
-            return self.reply(200, {"count": 1, "value": [{"id": 1, "name": "ephemera-ubuntu-amd64"}]})
+            return self.reply(200, {"count": 1, "value": [{"id": 1, "name": parse_qs(urlsplit(self.path).query).get("name", ["ephemera-ubuntu-amd64"])[0]}]})
         if path == "/queue":
             time.sleep(1)
             return self.reply(204)
@@ -58,7 +58,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200)
         if path.startswith(prefix + "download/"):
             parts = path.split("/")
-            if len(parts) == 7 and parts[-1] in ("checksums.txt", "ephemera_linux_amd64.tar.gz"):
+            if len(parts) == 7 and parts[-1] in ("checksums.txt", "ephemera_linux_amd64.tar.gz", "ephemera_linux_arm64.tar.gz"):
                 asset = root / parts[-2] / parts[-1]
                 if asset.is_file():
                     self.send_response(200)

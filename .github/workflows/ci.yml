@@ -12,7 +12,13 @@ permissions:
   contents: read
 jobs:
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -31,12 +37,16 @@ jobs:
           cd dist
           sha256sum -c checksums.txt
           mkdir verify
-          tar -xzf ephemera_linux_amd64.tar.gz -C verify
+          tar -xzf ephemera_linux_${{ matrix.arch }}.tar.gz -C verify
           test -s verify/ephemera.service && test -s verify/install.sh
           test "$(verify/ephemera version)" = "$(verify/ephemerad --version)"
 
   ubuntu-install:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -44,11 +54,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Exercise installation and rollback on Ubuntu amd64
+      - name: Exercise installation and rollback on Ubuntu
         run: scripts/ci-install-test.sh
+  ubuntu-vm:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/ubuntu-vm.yml
+
   release:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: [check, ubuntu-install]
+    needs: [check, ubuntu-install, ubuntu-vm]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -106,15 +120,33 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/release"
           gh release download "$TAG" --dir "$RUNNER_TEMP/release" \
-            --pattern ephemera_linux_amd64.tar.gz --pattern checksums.txt --pattern install.sh
+            --pattern 'ephemera_linux_*.tar.gz' --pattern checksums.txt --pattern install.sh
           cd "$RUNNER_TEMP/release"
           sha256sum -c checksums.txt
-          mkdir verify
-          tar -xzf ephemera_linux_amd64.tar.gz -C verify
-          test -s verify/ephemera.service && test -s verify/install.sh
-          cmp install.sh verify/install.sh
-          test "$(verify/ephemera version)" = "$TAG $RELEASE_COMMIT"
-          test "$(verify/ephemerad --version)" = "$TAG $RELEASE_COMMIT"
+          arches=(amd64)
+          if git show "$RELEASE_COMMIT:.goreleaser.yaml" | grep -F 'goarch: [amd64, arm64]' >/dev/null; then
+            arches+=(arm64)
+            sudo apt-get update
+            sudo apt-get install -y qemu-user
+          fi
+          for arch in "${arches[@]}"; do
+            grep -Eq "^[[:xdigit:]]{64} [ *]ephemera_linux_$arch\.tar\.gz$" checksums.txt
+            mkdir "verify-$arch"
+            tar -xzf "ephemera_linux_$arch.tar.gz" -C "verify-$arch"
+            test -s "verify-$arch/ephemera.service" && test -s "verify-$arch/install.sh"
+            cmp install.sh "verify-$arch/install.sh"
+            executor=()
+            machine='Advanced Micro Devices X86-64'
+            if [[ "$arch" == arm64 ]]; then
+              executor=(qemu-aarch64)
+              machine=AArch64
+            fi
+            for binary in ephemera ephemerad; do
+              LC_ALL=C readelf -h "verify-$arch/$binary" | grep -E "Machine:[[:space:]]+$machine$"
+            done
+            test "$("${executor[@]}" "verify-$arch/ephemera" version)" = "$TAG $RELEASE_COMMIT"
+            test "$("${executor[@]}" "verify-$arch/ephemerad" --version)" = "$TAG $RELEASE_COMMIT"
+          done
       - name: Publish verified draft
         if: steps.existing.outputs.published != 'true'
         env:
@@ -130,7 +162,11 @@ jobs:
             expected_latest=$TAG
             gh release edit "$TAG" --draft=false --latest
           fi
-          for asset in checksums.txt ephemera_linux_amd64.tar.gz install.sh; do
+          assets=(checksums.txt ephemera_linux_amd64.tar.gz install.sh)
+          if [[ -f "$RUNNER_TEMP/release/ephemera_linux_arm64.tar.gz" ]]; then
+            assets+=(ephemera_linux_arm64.tar.gz)
+          fi
+          for asset in "${assets[@]}"; do
             curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
               --output /dev/null "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$asset" ||
               { echo "Public asset could not be downloaded: $asset" >&2; exit 1; }

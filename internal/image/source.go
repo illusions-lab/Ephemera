@@ -38,6 +38,11 @@ func DefaultSource(p Platform) (Source, error) {
 	if !supports(p) {
 		return Source{}, fmt.Errorf("no verified image recipe for %s", p)
 	}
+	if p.Arch == "arm64" {
+		return Source{BaseURL: "https://cloud-images.ubuntu.com/releases/noble/release-20260826/ubuntu-24.04-server-cloudimg-arm64.img",
+			BaseSHA256:    "afa139bac6f2629c1e1f2f8f34215f3a9ad9779801bcb945521ba1a45016743f",
+			RunnerVersion: "2.338.2", RunnerSHA256: "670adb2f268fe21dcbb58b3db0e0aa9d5b3bddfe2c651481336e561ff86de945"}, nil
+	}
 	return Source{
 		BaseURL:       "https://cloud-images.ubuntu.com/releases/noble/release-20260826/ubuntu-24.04-server-cloudimg-amd64.img",
 		BaseSHA256:    "d0fe84bb5f80853425fa6be28e2c106f30104c3cfe8611933f2e65c9b63f0e30",
@@ -46,7 +51,7 @@ func DefaultSource(p Platform) (Source, error) {
 	}, nil
 }
 
-func supports(p Platform) bool { return p.Tag == "ubuntu" && p.Arch == "amd64" }
+func supports(p Platform) bool { return p.Tag == "ubuntu" && (p.Arch == "amd64" || p.Arch == "arm64") }
 
 var runnerVersion = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 
@@ -65,9 +70,13 @@ func (s Source) Validate() error {
 	return nil
 }
 
-func (s Source) runnerURL() string {
-	return fmt.Sprintf("https://github.com/actions/runner/releases/download/v%s/actions-runner-linux-x64-%s.tar.gz",
-		s.RunnerVersion, s.RunnerVersion)
+func (s Source) runnerURL(arch string) string {
+	asset := "x64"
+	if arch == "arm64" {
+		asset = arch
+	}
+	return fmt.Sprintf("https://github.com/actions/runner/releases/download/v%s/actions-runner-linux-%s-%s.tar.gz",
+		s.RunnerVersion, asset, s.RunnerVersion)
 }
 
 func (s Source) normalized() Source {

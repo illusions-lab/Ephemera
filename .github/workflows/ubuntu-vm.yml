@@ -1,26 +1,7 @@
 name: Ubuntu VM acceptance
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/ubuntu-vm.yml'
-      - 'cmd/**'
-      - 'internal/image/**'
-      - 'internal/service/**'
-      - 'internal/vm/**'
-      - 'internal/status/**'
-      - 'internal/orders/**'
-      - 'internal/cli/**'
-      - 'internal/config/**'
-      - 'go.mod'
-      - 'go.sum'
-      - '.goreleaser.yaml'
-      - 'packaging/ephemera.service'
-      - 'configs/ephemera.example.yaml'
-      - 'scripts/install.sh'
-      - 'scripts/ci-release-test.sh'
-      - 'scripts/ci-github.py'
+  workflow_call:
   pull_request:
     paths:
       - '.github/workflows/ubuntu-vm.yml'
@@ -28,6 +9,7 @@ on:
       - 'internal/image/**'
       - 'internal/service/**'
       - 'internal/vm/**'
+      - 'internal/qemuplatform/**'
       - 'internal/status/**'
       - 'internal/orders/**'
       - 'internal/cli/**'
@@ -44,7 +26,13 @@ permissions:
   contents: read
 jobs:
   ubuntu-vm:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04, qemu: qemu-system-x86 }
+          - { arch: arm64, runner: ubuntu-24.04-arm, qemu: "qemu-system-arm qemu-efi-aarch64" }
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
@@ -63,7 +51,7 @@ jobs:
           cd dist
           sha256sum -c checksums.txt
           mkdir "$RUNNER_TEMP/vm-bundle"
-          tar -xzf ephemera_linux_amd64.tar.gz -C "$RUNNER_TEMP/vm-bundle"
+          tar -xzf ephemera_linux_${{ matrix.arch }}.tar.gz -C "$RUNNER_TEMP/vm-bundle"
           cd "$RUNNER_TEMP/vm-bundle"
           test -s ephemera.service
           test -s install.sh
@@ -73,7 +61,7 @@ jobs:
       - name: Install image preparation tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 qemu-utils libguestfs-tools cloud-image-utils linux-image-generic
+          sudo apt-get install -y ${{ matrix.qemu }} qemu-utils libguestfs-tools cloud-image-utils linux-image-generic
           # Use libguestfs's QEMU user networking on the disposable runner.
           if command -v passt >/dev/null; then
             sudo dpkg-divert --local --rename --add "$(command -v passt)"

@@ -65,10 +65,10 @@ func prepareFromCatalog(path string) error {
 		if err != nil {
 			return err
 		}
-		if entry.profile != "ubuntu-24.04" {
+		if entry.profile != "ubuntu-24.04" && entry.profile != "ubuntu-24.04-arm" {
 			return fmt.Errorf("%s (%s): %s", entry.profile, entry.arch, entry.requirements())
 		}
-		selected.VM.Image, selected.VM.Arch, selected.VM.Profile = "ubuntu", entry.arch, entry.profile
+		selected.VM.Image, selected.VM.Arch, selected.VM.Profile = "ubuntu", entry.arch, "ubuntu-24.04"
 		source, err := image.DefaultSource(image.Platform{Tag: selected.VM.Image, Arch: selected.VM.Arch})
 		if err != nil {
 			return err
@@ -139,7 +139,7 @@ func selectUpstreamImage() (upstreamImage, error) {
 	var options []huh.Option[int]
 	for i, image := range upstreamImages {
 		status := "recipe pending"
-		if image.profile == "ubuntu-24.04" {
+		if image.profile == "ubuntu-24.04" || image.profile == "ubuntu-24.04-arm" {
 			status = "Ubuntu base build"
 		} else if image.profile == "macos-14" {
 			status = "retired on GitHub Actions"

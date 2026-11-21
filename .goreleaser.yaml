@@ -6,14 +6,14 @@ builds:
     binary: ephemera
     env: [CGO_ENABLED=0]
     goos: [linux]
-    goarch: [amd64]
+    goarch: [amd64, arm64]
     ldflags: ['-s -w -X github.com/illusions-lab/Ephemera/internal/version.Version={{ .Tag }} -X github.com/illusions-lab/Ephemera/internal/version.Commit={{ .FullCommit }}']
   - id: ephemerad
     main: ./cmd/ephemerad
     binary: ephemerad
     env: [CGO_ENABLED=0]
     goos: [linux]
-    goarch: [amd64]
+    goarch: [amd64, arm64]
     ldflags: ['-s -w -X github.com/illusions-lab/Ephemera/internal/version.Version={{ .Tag }} -X github.com/illusions-lab/Ephemera/internal/version.Commit={{ .FullCommit }}']
 archives:
   - id: bundle

@@ -1,5 +1,6 @@
 .DEFAULT_GOAL := help
 
+LINUX_ARCH ?= amd64
 CONFIG ?= configs/ephemera.example.yaml
 IMAGE_CACHE ?= bin/image
 DEBIAN_IMAGE ?=
@@ -12,8 +13,8 @@ export CONFIG IMAGE_CACHE DEBIAN_IMAGE DEBIAN_SHA512
 help:
 	@printf '%s\n' \
 	  'make build         Build the CLI and daemon into bin/' \
-	  'make build-linux   Cross-build the CLI and daemon for Linux amd64' \
-	  'make bundle-linux  Stage a Linux amd64 installer bundle in bin/bundle' \
+	  'make build-linux   Cross-build the CLI and daemon for Linux (LINUX_ARCH=amd64 or arm64)' \
+	  'make bundle-linux  Stage a Linux installer bundle in bin/bundle' \
 	  'make fmt           Format Go source' \
 	  'make check         Run Go tests, vet, shell checks, and config validation' \
 	  'make config-check  Validate the example or pass CONFIG=/path/to/config.yaml' \
@@ -31,13 +32,13 @@ build:
 
 build-linux:
 	mkdir -p bin
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/ephemera-linux-amd64 ./cmd/ephemera
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/ephemerad-linux-amd64 ./cmd/ephemerad
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(LINUX_ARCH) go build -o bin/ephemera-linux-$(LINUX_ARCH) ./cmd/ephemera
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(LINUX_ARCH) go build -o bin/ephemerad-linux-$(LINUX_ARCH) ./cmd/ephemerad
 
 bundle-linux: build-linux
 	mkdir -p bin/bundle
-	cp bin/ephemera-linux-amd64 bin/bundle/ephemera
-	cp bin/ephemerad-linux-amd64 bin/bundle/ephemerad
+	cp bin/ephemera-linux-$(LINUX_ARCH) bin/bundle/ephemera
+	cp bin/ephemerad-linux-$(LINUX_ARCH) bin/bundle/ephemerad
 	cp packaging/ephemera.service bin/bundle/ephemera.service
 	cp scripts/install.sh bin/bundle/install.sh
 

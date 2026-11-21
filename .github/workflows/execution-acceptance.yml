@@ -6,6 +6,11 @@ on:
         description: Runner label of the dedicated test Scale Set
         required: true
         type: string
+      arch:
+        description: Expected guest architecture
+        type: choice
+        options: [amd64, arm64]
+        default: amd64
       overlap:
         description: Run two overlapping jobs
         default: false
@@ -24,8 +29,16 @@ jobs:
     steps:
       - name: Record guest identity
         shell: bash
+        env:
+          EXPECTED_ARCH: ${{ inputs.arch }}
         run: |
           set -euo pipefail
+          case "$EXPECTED_ARCH" in
+            amd64) test "$(uname -m)" = x86_64 ;;
+            arm64) test "$(uname -m)" = aarch64 ;;
+            *) exit 1 ;;
+          esac
+          started_at=$(date -u +%FT%TZ)
           boot_id=$(cat /proc/sys/kernel/random/boot_id)
           instance_id=$(cloud-init query instance_id)
           [[ "$instance_id" =~ ^[0-9a-f-]{36}$ ]]
@@ -36,3 +49,4 @@ jobs:
             printf 'Boot %s\n' "$boot_id"
           } >> "$GITHUB_STEP_SUMMARY"
           sleep 60
+          printf "Started %s\n\nFinished %s\n" "$started_at" "$(date -u +%FT%TZ)" >> "$GITHUB_STEP_SUMMARY"
