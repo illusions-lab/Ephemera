@@ -87,11 +87,11 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 	current.Scope, current.ScaleSet = cfg.GitHub.ScopeURL, cfg.GitHub.ScaleSetName
 	current.MaxConcurrent = cfg.Runner.MaxConcurrent
 	current.Backend = cfg.VM.Backend
-	if cfg.Runner.Execute && runtime.GOOS == "linux" && cfg.VM.Arch != runtime.GOARCH {
-		return fmt.Errorf("execution guest architecture %s must match host architecture %s", cfg.VM.Arch, runtime.GOARCH)
-	}
 	if cfg.Runner.Execute && opts.Claim {
 		return errors.New("runner.execute cannot be combined with --claim")
+	}
+	if cfg.Runner.Execute && runtime.GOOS == "linux" && cfg.VM.Arch != runtime.GOARCH {
+		return fmt.Errorf("execution guest architecture %s must match host architecture %s", cfg.VM.Arch, runtime.GOARCH)
 	}
 	var store instanceStore
 	var backend vm.Backend

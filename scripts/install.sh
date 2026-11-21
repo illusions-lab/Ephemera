@@ -19,7 +19,9 @@ while (($#)); do
 done
 [[ -z "$version" || -z "$bundle" ]] || die 'choose either --version or --bundle'
 [[ "$mode" == install || ( -z "$version" && -z "$bundle" && -z "$config" && -z "$key" && "$non_interactive" == false ) ]] || die 'invalid update options'
-[[ -z "$config$key" ]] || { "$non_interactive" && [[ -n "$config" && -n "$key" ]] || die 'provide --non-interactive, --config and --github-app-key together'; }
+if [[ -n "$config$key" ]] && { ! "$non_interactive" || [[ -z "$config" || -z "$key" ]]; }; then
+  die 'provide --non-interactive, --config and --github-app-key together'
+fi
 root=/opt/ephemera
 current=$root/current
 staged=$root/staged
