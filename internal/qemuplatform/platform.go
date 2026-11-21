@@ -51,6 +51,9 @@ func (p Platform) BootArgs(dir string, kvm bool) ([]string, error) {
 	if !p.arm {
 		return []string{"-machine", "accel=" + accel, "-cpu", cpu, "-boot", "order=c"}, nil
 	}
+	if !kvm {
+		cpu = "cortex-a72"
+	}
 	data, err := os.ReadFile(firmwareVars)
 	if err != nil {
 		return nil, err

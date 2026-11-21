@@ -255,7 +255,11 @@ func (c cache) buildUbuntu(ctx context.Context, work string, cfg Config) error {
 }
 
 func bootCheck(ctx context.Context, temp, disk string, cfg Config) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	timeout := 5 * time.Minute
+	if cfg.Platform.Arch == "arm64" {
+		timeout = 10 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	overlay, seed := filepath.Join(temp, "boot.qcow2"), filepath.Join(temp, "seed.img")
 	if err := command(ctx, "qemu-img", "create", "-f", "qcow2", "-F", "qcow2", "-b", disk, overlay); err != nil {
@@ -275,11 +279,17 @@ func bootCheck(ctx context.Context, temp, disk string, cfg Config) error {
 	}
 	args := []string{
 		"-m", strconv.Itoa(cfg.MemoryMiB), "-smp", strconv.Itoa(cfg.VCPUs),
-		"-display", "none", "-monitor", "none", "-serial", "null", "-serial", "file:" + console, "-no-reboot",
+		"-display", "none", "-monitor", "none", "-no-reboot",
 		"-nic", "user,restrict=on,model=virtio-net-pci",
 		"-drive", qemuplatform.FileOption(overlay) + ",format=qcow2,if=virtio",
 		"-drive", qemuplatform.FileOption(seed) + ",format=raw,if=virtio,readonly=on"}
-	args = append(args, platform.StatusArgs(console)...)
+	statusArgs := platform.StatusArgs(console)
+	var bootLog string
+	if os.Getenv("EPHEMERA_OFFLINE_BOOT_DEBUG") == "1" {
+		bootLog = filepath.Join(temp, "boot-kernel.log")
+		statusArgs[1] = "file:" + bootLog
+	}
+	args = append(args, statusArgs...)
 	err = command(ctx, platform.Binary, append(args, boot...)...)
 	data, readErr := os.ReadFile(console)
 	if err == nil && readErr == nil {
@@ -289,7 +299,13 @@ func bootCheck(ctx context.Context, temp, disk string, cfg Config) error {
 			}
 		}
 	}
-	return fmt.Errorf("Ubuntu boot check failed: %w", errors.Join(err, readErr, errors.New("guest did not complete validation")))
+	failure := errors.Join(err, readErr, errors.New("guest did not complete validation"))
+	if bootLog != "" {
+		kernel, _ := os.ReadFile(bootLog)
+		return fmt.Errorf("Ubuntu boot check failed: %w\nGuest boot tail:\n%s\nRunner console tail:\n%s",
+			failure, kernel[max(0, len(kernel)-4096):], data[max(0, len(data)-2048):])
+	}
+	return fmt.Errorf("Ubuntu boot check failed: %w", failure)
 }
 
 func command(ctx context.Context, name string, args ...string) error {

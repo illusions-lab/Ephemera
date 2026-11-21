@@ -17,7 +17,7 @@ trap cleanup EXIT
 
 arch=$(dpkg --print-architecture)
 sed -e "s/arch: amd64/arch: $arch/" -e "s/ephemera-ubuntu-amd64/ephemera-ubuntu-$arch/" configs/ephemera.example.yaml > "$work/config.yaml"
-sudo env LIBGUESTFS_BACKEND=direct "$bundle/ephemera" image prepare --config "$work/config.yaml"
+sudo env LIBGUESTFS_BACKEND=direct EPHEMERA_OFFLINE_BOOT_DEBUG=1 "$bundle/ephemera" image prepare --config "$work/config.yaml"
 openssl genrsa -traditional -out "$work/key.pem" 2048
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=github.com \
   -addext 'subjectAltName=DNS:github.com,DNS:api.github.com' \
