@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -98,8 +99,8 @@ func (cfg Config) Validate() error {
 		return errors.New("runner.max_concurrent must be between 1 and 2147483647")
 	case cfg.Runner.StartupTimeout <= 0 || cfg.Runner.IdleTimeout <= 0:
 		return errors.New("runner.startup_timeout and runner.idle_timeout must be positive")
-	case cfg.Runner.Execute && (cfg.VM.Image != "ubuntu" || cfg.VM.Arch != "amd64"):
-		return errors.New("execution requires the Ubuntu amd64 guest")
+	case cfg.Runner.Execute && (cfg.VM.Image != "ubuntu" || (cfg.VM.Arch != "amd64" && cfg.VM.Arch != "arm64")):
+		return errors.New("execution requires an Ubuntu amd64 or arm64 guest")
 	case cfg.VM.Backend != "qemu":
 		return errors.New("vm.backend must be qemu")
 	case strings.TrimSpace(cfg.VM.Image) == "" || cfg.VM.VCPUs <= 0 || cfg.VM.MemoryMiB <= 0:
@@ -113,7 +114,7 @@ func (cfg Config) Validate() error {
 			return fmt.Errorf("vm.image / vm.arch: %w", err)
 		}
 	}
-	if cfg.VM.Profile != "" && (cfg.VM.Profile != "ubuntu-24.04" || cfg.VM.Image != "ubuntu" || cfg.VM.Arch != "amd64") {
+	if cfg.VM.Profile != "" && (cfg.VM.Profile != "ubuntu-24.04" || cfg.VM.Image != "ubuntu" || (cfg.VM.Arch != "amd64" && cfg.VM.Arch != "arm64")) {
 		return errors.New("vm.profile must name an available recipe for the selected image and architecture")
 	}
 	for tag, architectures := range cfg.ImageSources {
@@ -203,6 +204,10 @@ func Defaults() Config {
 	cfg.Runner.IdleTimeout = 5 * time.Minute
 	cfg.VM.Backend = "qemu"
 	cfg.VM.Image, cfg.VM.Arch = "ubuntu", "amd64"
+	if runtime.GOOS == "linux" && runtime.GOARCH == "arm64" {
+		cfg.VM.Arch = "arm64"
+		cfg.GitHub.ScaleSetName = "ephemera-ubuntu-arm64"
+	}
 	cfg.VM.VCPUs, cfg.VM.MemoryMiB = 2, 4096
 	return cfg
 }

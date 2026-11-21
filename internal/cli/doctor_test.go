@@ -116,6 +116,7 @@ func TestDoctorChecks(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := config.Defaults()
+			cfg.VM.Arch = "amd64"
 			cfg.GitHub.ScopeURL = "https://github.com/example"
 			cfg.GitHub.AppID, cfg.GitHub.InstallationID = 12, 34
 			const key = "fixture private key"
@@ -135,10 +136,10 @@ func TestDoctorChecks(t *testing.T) {
 				checkImage: func(_ context.Context, path string, _ image.Config) (image.Image, error) {
 					return image.Image{Path: path + "/image.qcow2"}, nil
 				},
-				linuxAMD64: true,
-				lookPath:   func(name string) (string, error) { return name, nil },
-				checkKVM:   func() error { return nil },
-				diskSpace:  func(path string) (uint64, string, error) { return 16 << 30, path, nil },
+				hostArch:  "amd64",
+				lookPath:  func(name string) (string, error) { return name, nil },
+				checkKVM:  func() error { return nil },
+				diskSpace: func(path string) (uint64, string, error) { return 16 << 30, path, nil },
 			}
 			if test.change != nil {
 				test.change(&checks)

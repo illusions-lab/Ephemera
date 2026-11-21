@@ -43,7 +43,7 @@ done`,
 		}) {
 		t.Fatalf("invalid offline cloud-init bootstrap: %+v", cloudConfig)
 	}
-	cfg := Config{MemoryMiB: 2048, VCPUs: 2}
+	cfg := Config{Platform: Platform{Tag: "ubuntu", Arch: "amd64"}, MemoryMiB: 2048, VCPUs: 2}
 	t.Setenv("EPHEMERA_TEST_SERIAL", "guest shut down")
 	if err := bootCheck(context.Background(), work, "/base.qcow2", cfg); err == nil {
 		t.Fatal("a successful QEMU exit without the validation marker should fail")

@@ -4,7 +4,7 @@ Ephemera has two entry points. Administrators use `ephemera` (also available
 as `ephe`) to configure the installation and prepare runner images. systemd
 runs `ephemerad` to maintain the connection to GitHub and manage job execution.
 
-The daemon starts in observation mode by default. Linux amd64 hosts with KVM can opt in to ephemeral Ubuntu runner execution.
+The daemon starts in observation mode by default. Linux amd64 and arm64 hosts with KVM can opt in to ephemeral Ubuntu runner execution.
 
 ## Repository layout
 
@@ -147,7 +147,7 @@ backend, guest OS, architecture, and pinned source that they support.
 
 | Backend | First target | Storage and bootstrap |
 |---|---|---|
-| QEMU | Linux amd64 host with KVM, Ubuntu amd64 guest | Create a qcow2 overlay and a private per-instance cloud-init seed. Reuse the Ubuntu image's systemd runner bootstrap. Remove the seed with the instance. |
+| QEMU | Linux amd64 or arm64 host with KVM and a matching Ubuntu guest | Create a qcow2 overlay and a private per-instance cloud-init seed. Reuse the Ubuntu image's systemd runner bootstrap. Remove the seed with the instance. ARM64 uses read-only AAVMF firmware, private per-instance UEFI variables, and a dedicated virtio console for readiness. |
 | Tart | Apple Silicon macOS host, macOS arm64 guest | Clone a pinned Tart image and run the clone headless. Prototype JIT delivery through the Tart Guest Agent using a narrowly scoped host-to-guest channel. Verify agent readiness, credential confidentiality, and daemon service-account operation on real hardware. |
 
 Place bootstrap artifacts in private per-instance storage and expose only

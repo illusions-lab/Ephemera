@@ -19,6 +19,7 @@ import (
 	"github.com/illusions-lab/Ephemera/internal/config"
 	"github.com/illusions-lab/Ephemera/internal/image"
 	"github.com/illusions-lab/Ephemera/internal/orders"
+	"github.com/illusions-lab/Ephemera/internal/qemuplatform"
 	"golang.org/x/sys/unix"
 )
 
@@ -31,7 +32,7 @@ type doctorChecks struct {
 	readKey       func(string) ([]byte, error)
 	probeScaleSet func(context.Context, orders.Config) (bool, error)
 	checkImage    func(context.Context, string, image.Config) (image.Image, error)
-	linuxAMD64    bool
+	hostArch      string
 	lookPath      func(string) (string, error)
 	checkKVM      func() error
 	diskSpace     func(string) (uint64, string, error)
@@ -56,7 +57,7 @@ func runDoctor(args []string) error {
 	defer stop()
 	return diagnose(ctx, os.Stdout, doctorPaths{config: *path, key: *keyPath, cache: *cacheDir}, doctorChecks{
 		loadConfig: config.Load, readKey: config.ReadKey, probeScaleSet: orders.ProbeScaleSet,
-		checkImage: image.CheckCached, linuxAMD64: runtime.GOOS == "linux" && runtime.GOARCH == "amd64",
+		checkImage: image.CheckCached, hostArch: linuxHostArch(),
 		lookPath: exec.LookPath, checkKVM: checkKVM, diskSpace: availableDisk,
 	})
 }
@@ -76,6 +77,9 @@ func diagnose(ctx context.Context, output io.Writer, paths doctorPaths, checks d
 	cfg, configErr := checks.loadConfig(paths.config)
 	if configErr == nil {
 		report("OK", "Configuration", paths.config)
+		if checks.hostArch != "" && cfg.VM.Arch != "" && cfg.VM.Arch != checks.hostArch {
+			report("FAIL", "Architecture", fmt.Sprintf("Configured guest %s requires a matching host (current %s).", cfg.VM.Arch, checks.hostArch))
+		}
 	} else {
 		report("FAIL", "Configuration", fmt.Sprintf("%v. Review the file or run sudo ephe setup.", configErr))
 	}
@@ -133,12 +137,13 @@ func diagnose(ctx context.Context, output io.Writer, paths doctorPaths, checks d
 		}
 	}
 
-	if !checks.linuxAMD64 {
-		report("FAIL", "QEMU host", "The Ubuntu runner image requires Linux amd64.")
+	platform, platformErr := qemuplatform.ForArch(checks.hostArch)
+	if platformErr != nil {
+		report("FAIL", "QEMU host", "The Ubuntu runner image requires Linux amd64 or arm64.")
 		report("SKIP", "KVM", "Run this check on the Linux runner host.")
 	} else {
 		var missing []string
-		for _, binary := range []string{"qemu-system-x86_64", "qemu-img"} {
+		for _, binary := range []string{platform.Binary, "qemu-img"} {
 			if _, err := checks.lookPath(binary); err != nil {
 				missing = append(missing, binary)
 			}
@@ -146,7 +151,10 @@ func diagnose(ctx context.Context, output io.Writer, paths doctorPaths, checks d
 		if len(missing) > 0 {
 			report("FAIL", "QEMU", "Missing: "+strings.Join(missing, ", ")+". Install the QEMU packages on the host.")
 		} else {
-			report("OK", "QEMU", "qemu-system-x86_64 and qemu-img are available.")
+			report("OK", "QEMU", platform.Binary+" and qemu-img are available.")
+		}
+		if err := platform.CheckFirmware(); err != nil {
+			report("FAIL", "QEMU firmware", err.Error())
 		}
 		if err := checks.checkKVM(); err != nil {
 			report("WARN", "KVM", fmt.Sprintf("%v. QEMU image verification can fall back to software emulation.", err))
@@ -197,4 +205,11 @@ func availableDisk(path string) (uint64, string, error) {
 		}
 		dir = parent
 	}
+}
+
+func linuxHostArch() string {
+	if runtime.GOOS == "linux" {
+		return runtime.GOARCH
+	}
+	return ""
 }

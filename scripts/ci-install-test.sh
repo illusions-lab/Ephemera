@@ -2,6 +2,7 @@
 # Run only on a disposable Ubuntu runner: this installs a system service.
 set -euo pipefail
 work=$(mktemp -d)
+archive=ephemera_linux_$(dpkg --print-architecture).tar.gz
 cleanup() {
   local status=$?
   if (( status != 0 )); then
@@ -115,11 +116,11 @@ before=$(sudo sha256sum /etc/ephemera/config.yaml /etc/ephemera/credentials/gith
 start=$(systemctl show -p ActiveEnterTimestampMonotonic --value ephemera.service)
 for tag in v0.1.1 v0.1.2; do
   mkdir "$work/$tag"
-  tar -C "$work/v2" -czf "$work/$tag/ephemera_linux_amd64.tar.gz" \
+  tar -C "$work/v2" -czf "$work/$tag/$archive" \
     ephemera ephemerad ephemera.service install.sh
-  (cd "$work/$tag" && sha256sum ephemera_linux_amd64.tar.gz > checksums.txt)
+  (cd "$work/$tag" && sha256sum "$archive" > checksums.txt)
 done
-echo corrupt >> "$work/v0.1.2/ephemera_linux_amd64.tar.gz"
+echo corrupt >> "$work/v0.1.2/$archive"
 echo v0.1.2 > "$work/latest"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=github.com \
   -addext 'subjectAltName=DNS:github.com' -keyout "$work/tls.key" -out "$work/tls.pem"

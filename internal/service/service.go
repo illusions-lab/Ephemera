@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 
 	"github.com/illusions-lab/Ephemera/internal/config"
@@ -88,6 +89,9 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 	current.Backend = cfg.VM.Backend
 	if cfg.Runner.Execute && opts.Claim {
 		return errors.New("runner.execute cannot be combined with --claim")
+	}
+	if cfg.Runner.Execute && runtime.GOOS == "linux" && cfg.VM.Arch != runtime.GOARCH {
+		return fmt.Errorf("execution guest architecture %s must match host architecture %s", cfg.VM.Arch, runtime.GOARCH)
 	}
 	var store instanceStore
 	var backend vm.Backend

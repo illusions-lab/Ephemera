@@ -76,7 +76,7 @@ Ephemera is designed to support multiple operating systems and CPU architectures
 
 | Guest OS | AMD64 | ARM64 | Backend |
 |---|---|---|---|
-| Linux | QEMU/KVM execution behind an opt-in | Planned | QEMU/KVM, Tart |
+| Ubuntu 24.04 | Opt-in QEMU/KVM | Opt-in QEMU/KVM, live acceptance pending | QEMU/KVM |
 | Windows | Planned | Experimental target | QEMU |
 | macOS | Not currently targeted | Planned | Tart |
 
@@ -89,7 +89,7 @@ Ephemera is designed to support multiple operating systems and CPU architectures
 
 ## Architecture
 
-The current Linux daemon prepares and verifies an Ubuntu amd64 runner image
+The current Linux daemon prepares and verifies an Ubuntu runner image
 and monitors GitHub Runner Scale Set demand. When execution is enabled,
 one daemon coordinates demand and the lifecycle of QEMU runner VMs on the
 host. QEMU/KVM on
@@ -125,7 +125,7 @@ Ephemera builds upon established open-source technologies:
 
 ## Installation
 
-**Ubuntu 24.04 amd64 with systemd is the primary supported host.** Other
+**Ubuntu 24.04 with systemd is the host validation baseline.** Other
 Linux distributions have not been verified to the same level.
 
 Install the latest release and register the systemd service from any directory:
@@ -157,9 +157,9 @@ one, use `sudo bash install.sh --version v0.1.0` and follow the printed apply
 command. `--bundle DIR` supports offline and development installations.
 
 Use `--version TAG` to pin a release or `--bundle DIR` to use
-a local bundle. For an Ubuntu amd64 bundle from source, run
-`make bundle-linux` and pass `--bundle bin/bundle`. The service observes
-GitHub job demand by default. Linux amd64 hosts with KVM can opt in to
+a local bundle. For a Linux bundle from source, run
+`make bundle-linux LINUX_ARCH=amd64` (or `LINUX_ARCH=arm64`) and pass `--bundle bin/bundle`. The service observes
+GitHub job demand by default. Linux amd64 and arm64 hosts with KVM can opt in to
 QEMU execution.
 
 For automated deployment, provide a configuration and private key. This
@@ -232,14 +232,14 @@ After the first configuration is saved, the wizard offers these actions:
   saved configuration after confirmation.
 
 The image menu starts with **Ephemera presets**. On first use it
-preselects Ubuntu amd64. Later visits start with your configured image
+preselects Ubuntu for the Linux host architecture. Later visits start with your configured image
 and architecture. The presets include Ubuntu and Windows for amd64 and
-arm64. Ubuntu amd64 is the implemented recipe.
+arm64. Ubuntu 24.04 has recipes for amd64 and arm64.
 
 Open **GitHub runner images** to browse the bundled snapshot of the
 official image catalog, including aliases for Ubuntu, Windows, macOS and
 Xcode. Select an entry to see whether it can be prepared. The Ubuntu
-24.04 amd64 entry and its `ubuntu-latest` alias use Ephemera's Ubuntu
+24.04 amd64 entry (including `ubuntu-latest`) and `ubuntu-24.04-arm` use Ephemera's Ubuntu
 recipe, which installs the GitHub runner and its dependencies. Matching
 the full hosted runner toolset requires a separate recipe.
 [GitHub's official image catalog](https://github.com/actions/runner-images#available-images)
@@ -250,7 +250,7 @@ records the resolved profile and pinned source in the configuration.
 Preparing or saving an image keeps the current service running.
 
 For command-line image preparation, run `sudo ephemera image prepare`
-on an Ubuntu amd64 host with the [image build tools](#runner-images-and-readiness)
+on a matching Ubuntu host with the [image build tools](#runner-images-and-readiness)
 installed.
 
 ## Service status and diagnostics
@@ -306,7 +306,7 @@ print the SSH command for the retained VM.
 installer with a systemd fixture unit. The test generates a disposable
 RSA key, installs twice, checks that the config and key are preserved,
 and verifies that systemd can restart the unit. For an externally
-built bundle, pass `--bundle DIR` containing Linux amd64 `ephemera` and
+built bundle, pass `--bundle DIR` containing native Linux `ephemera` and
 `ephemerad` binaries, a test `ephemera.service`, and a secret-free `config.yaml`.
 
 ### Test GitHub job intake
@@ -332,11 +332,11 @@ command has no runner backend.
 
 ### Test QEMU execution
 
-Use one Linux amd64 host with KVM and one dedicated Scale Set. Give the
+Use one Linux KVM host and one dedicated Scale Set per architecture. Give the
 `ephemera` service account access to KVM, install the image preparation tools,
 and configure the host firewall or upstream network policy to isolate the
 management network from guest traffic. Guests use outbound networking with
-no forwarded host ports. Use trusted workflows on the test Scale Set.
+no forwarded host ports. Use trusted workflows on the test Scale Set. On arm64, choose `arch: arm64` when dispatching the acceptance workflow.
 
 Set `runner.execute: true` in `/etc/ephemera/config.yaml` and restart
 `ephemera.service`. Set `runner.max_concurrent: 2` for overlap testing.
@@ -367,22 +367,29 @@ launch, readiness, execution, and cleanup.
 ### Runner images and readiness
 
 Set `vm.image` to `ubuntu` or `windows`, and `vm.arch` to `amd64` or
-`arm64`. The first implemented recipe is `ubuntu/amd64`. The remaining
+`arm64`. The implemented recipes are `ubuntu/amd64` and `ubuntu/arm64`. Other
 combinations are recognized and stop startup with an explicit error until
 their build and boot recipes are available. For older configs, add
 `arch: amd64` and replace the old image ID with `ubuntu` to use the
 managed image.
 
+If libguestfs stalls when building an image on a nested host, retry image
+preparation with `LIBGUESTFS_BACKEND_SETTINGS=force_tcg`. The offline
+boot check uses software emulation. Runner execution requires working KVM.
+
 The recipe uses pinned Ubuntu 24.04 and GitHub runner releases. Override
-both source pins under `image.ubuntu.amd64` with `base_url`,
+the source pins under `image.ubuntu.amd64` or `image.ubuntu.arm64` with `base_url`,
 `base_sha256`, `runner_version`, and `runner_sha256`. The image tag and
 the Scale Set name can stay the same after a source update.
 
-On an Ubuntu amd64 host, install the build tools, then prepare and test
+On a matching Ubuntu host, install the build tools, then prepare and test
 the image independently of GitHub:
 
 ```bash
+# amd64
 sudo apt install qemu-system-x86 qemu-utils guestfs-tools cloud-image-utils
+# arm64
+sudo apt install qemu-system-arm qemu-efi-aarch64 qemu-utils guestfs-tools cloud-image-utils
 make image-prepare
 ```
 
@@ -424,7 +431,7 @@ Scale Set before relying on that routing.
 - [ ] Remote host agents
 - [ ] Tart backend
 - [ ] macOS ARM64 runner support
-- [ ] Linux ARM64 runner support
+- [ ] Linux ARM64 runner support (live Scale Set acceptance pending)
 - [ ] Multi-host scheduling
 - [x] Configurable concurrency for job intake
 - [ ] Runner pools
