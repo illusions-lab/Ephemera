@@ -1,18 +1,21 @@
 # Ephemera
 
-Ephemera runs self-hosted GitHub Actions jobs in disposable virtual machines on your own hardware. It connects to GitHub through a GitHub App, starts a fresh runner VM when a job arrives, and removes the VM and its writable disk when the job finishes. Jobs start from a known image without sharing a working directory or relying on a long-running runner.
+**Self-hosted GitHub Actions runners in disposable VMs.**
 
-- **Scale on demand.** GitHub Runner Scale Sets supply job demand, and each host has a configurable concurrency limit.
-- **Run on one host.** Ubuntu hosts use QEMU/KVM, and Apple Silicon Macs use Tart. A single host runs Ephemera and its VMs.
-- **Keep environments reproducible.** Ephemera uses pinned guest images and official GitHub Actions Runner packages.
+[![CI](https://github.com/illusions-lab/Ephemera/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/illusions-lab/Ephemera/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/illusions-lab/Ephemera)](https://github.com/illusions-lab/Ephemera/releases/latest)
+
+Ephemera connects to GitHub through a GitHub App and Runner Scale Sets. Each job gets a fresh VM from a pinned image on your Ubuntu host or Apple Silicon Mac. Ephemera starts the official Runner, limits concurrency, and removes the VM and writable disk when the job finishes.
+
+[Install on Linux](#linux) · [Install on macOS](#macos) · [Architecture](ARCHITECTURE.md) · [Contribute](CONTRIBUTING.md)
 
 ## Quick Start
 
-### Linux · Ubuntu 24.04 on AMD64 or ARM64
+### Linux
 
 **Recommended AMD64 host:** A 10th-generation Intel Core i5 or newer with 32 GB of RAM. Install Ubuntu Server 24.04 LTS directly on the hardware and use KVM for job VMs.
 
-Ubuntu is our validated Linux host. Ephemera's Linux GitHub Actions runner image tooling is built and tested around Ubuntu. Debian and Red Hat Enterprise Linux have yet to be validated as runner hosts.
+Ubuntu Server 24.04 LTS is our validated Linux host on AMD64 and ARM64. Ephemera's Linux GitHub Actions runner image tooling is built and tested around Ubuntu. Debian and Red Hat Enterprise Linux have yet to be validated as runner hosts.
 
 Install the [image build tools](#runner-images-and-readiness) for your architecture before enabling job execution. If the latest release has no archive for your architecture, [install a candidate from source](#install-a-candidate-from-source).
 
@@ -28,9 +31,9 @@ ephe status
 sudo ephe doctor
 ```
 
-### macOS · Apple Silicon, macOS 26 or newer
+### macOS
 
-**Recommended host:** An Apple M2 or newer with at least 16 GB of memory. An M4 with 32 GB is ideal.
+**Recommended host:** An Apple M2 or newer with at least 16 GB of memory, running macOS 26 or newer. An M4 with 32 GB is ideal.
 
 My own host is an M2 Mac mini with 8 GB. Mac prices made that decision for me. It runs my jobs, and macOS still makes an awkward server.
 
@@ -75,10 +78,16 @@ Use `ephe status --watch` to follow job intake, VM startup, and cleanup.
 
 ## How it works
 
-1. `ephemerad` authenticates as the GitHub App and opens a Runner Scale Set session.
-2. With execution enabled, the daemon provisions a VM from the configured image when there is job demand and a slot is available.
-3. The guest starts the official GitHub Actions Runner with a just-in-time configuration.
-4. After the job, Ephemera removes the VM and its writable state, and reconciles the runner registration.
+```mermaid
+flowchart LR
+    Job[GitHub Actions job] --> ScaleSet[Runner Scale Set]
+    ScaleSet --> Daemon[Ephemera daemon]
+    Image[Pinned guest image] --> VM[Disposable runner VM]
+    Daemon -->|Provision when a slot is free| VM
+    VM -->|Run job and report result| Cleanup[Remove VM and runner registration]
+```
+
+With execution enabled, `ephemerad` provisions a VM when there is job demand and a runner slot is free. The guest starts the official GitHub Actions Runner with a just-in-time configuration. After the job finishes, Ephemera removes the VM and its writable state and reconciles the runner registration.
 
 The [architecture document](ARCHITECTURE.md#runner-execution-design) covers scheduling, VM backend contracts, and restart recovery.
 
