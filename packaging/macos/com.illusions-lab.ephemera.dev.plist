@@ -15,6 +15,8 @@
         <string>/ABSOLUTE/PRIVATE/STATE</string>
         <string>--status-socket</string>
         <string>/ABSOLUTE/PRIVATE/STATE/status.sock</string>
+        <string>--log-file</string>
+        <string>/ABSOLUTE/HOME/Library/Logs/Ephemera/daemon-dev.log</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
@@ -23,10 +25,6 @@
     </dict>
     <key>Umask</key>
     <integer>63</integer>
-    <key>StandardOutPath</key>
-    <string>/ABSOLUTE/PRIVATE/STATE/daemon.log</string>
-    <key>StandardErrorPath</key>
-    <string>/ABSOLUTE/PRIVATE/STATE/daemon.log</string>
     <key>KeepAlive</key>
     <true/>
     <key>ThrottleInterval</key>

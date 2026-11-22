@@ -3,7 +3,7 @@
 Use macOS 26 or newer on Apple Silicon. Run the installer in Terminal as the
 account that will run Ephemera. The installer uses the [bundled Tart manifest](../../internal/macos/tart-manifest.tsv)
 and stores
-the release, GitHub App credentials, VM state, and logs under
+the release, GitHub App credentials, and VM state under
 `~/Library/Application Support/Ephemera`. It places `ephe` and `ephemera` in
 `~/.local/bin` and installs `com.illusions-lab.ephemera` in `~/Library/LaunchAgents`.
 The agent runs while that account is logged in, including after it logs
@@ -27,7 +27,8 @@ unattended setup, pass `--non-interactive --config /path/to/config.yaml
 Unattended setup uses the supplied execution setting and skips power changes.
 Interactive setup defaults to `runner.execute: false` with a concurrency of
 one. To enable execution, edit `config.yaml` and run `ephe setup` to apply it.
-Use `ephe doctor`, `ephe status`, and `logs/daemon.log` to inspect the service.
+Use `ephe doctor`, `ephe status`, and
+`tail -F "$HOME/Library/Logs/Ephemera/daemon.log"` to inspect the service.
 
 Rerun the installer to upgrade, or pass `--version TAG` to select a specific
 release. Installation and direct `ephe setup` use the same activation
@@ -72,8 +73,9 @@ Set `--create` when the dedicated Scale Set needs to be registered. Run
 The pinned image is downloaded on first startup.
 
 For restart testing without the installer, replace the placeholders in a copy of the
-[LaunchAgent](com.illusions-lab.ephemera.dev.plist) with absolute paths. Stop
-the foreground daemon and register the plist with
+[LaunchAgent](com.illusions-lab.ephemera.dev.plist) with absolute paths.
+The development agent writes to `~/Library/Logs/Ephemera/daemon-dev.log`.
+Stop the foreground daemon and register the plist with
 `launchctl bootstrap "gui/$(id -u)" /absolute/path/to/the.plist`. Use
 `launchctl bootout "gui/$(id -u)/com.illusions-lab.ephemera.dev"` to stop the
 test agent, or boot it out and register it again after changing its plist.

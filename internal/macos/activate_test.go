@@ -44,6 +44,7 @@ func testActivation(t *testing.T) activation {
 	t.Cleanup(func() { _ = os.RemoveAll(box) })
 	bin := filepath.Join(box, "bin")
 	a := activation{root: filepath.Join(box, "user data"), plist: filepath.Join(box, "LaunchAgents", Label+".plist"), domain: "gui/999", wait: 700 * time.Millisecond}
+	a.logFile = filepath.Join(box, "Logs", "Ephemera", "daemon.log")
 	for _, dir := range []string{bin, filepath.Join(a.root, "state")} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			t.Fatal(err)
@@ -52,6 +53,7 @@ func testActivation(t *testing.T) activation {
 	writeActivationFile(t, filepath.Join(bin, "launchctl"), launchctlFixture, 0700)
 	t.Setenv("EPHE_ACTIVATION_TEST_ROOT", a.root)
 	t.Setenv("EPHE_ACTIVATION_TEST_PLIST", a.plist)
+	t.Setenv("EPHE_ACTIVATION_TEST_LOG", a.logFile)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return a
 }
@@ -150,6 +152,9 @@ func TestActivationInstallsAndAppliesConfig(t *testing.T) {
 		}
 		if got := readPlist(t, a.plist, "ProgramArguments.0"); got != filepath.Join(release, "ephemerad") {
 			t.Fatalf("daemon path = %q", got)
+		}
+		if flag, path := readPlist(t, a.plist, "ProgramArguments.8"), readPlist(t, a.plist, "ProgramArguments.9"); flag != "--log-file" || path != a.logFile {
+			t.Fatalf("log arguments = %q %q", flag, path)
 		}
 		config := readPlist(t, a.plist, "ProgramArguments.3")
 		if config == source || readActivationFile(t, config) != string(candidate.Config) {
@@ -357,7 +362,7 @@ func TestActivationInterruptedChild(t *testing.T) {
 	if release == "" {
 		t.Skip("subprocess fixture")
 	}
-	a := activation{root: os.Getenv("EPHE_ACTIVATION_TEST_ROOT"), plist: os.Getenv("EPHE_ACTIVATION_TEST_PLIST"), domain: "gui/999", wait: 30 * time.Second}
+	a := activation{root: os.Getenv("EPHE_ACTIVATION_TEST_ROOT"), plist: os.Getenv("EPHE_ACTIVATION_TEST_PLIST"), logFile: os.Getenv("EPHE_ACTIVATION_TEST_LOG"), domain: "gui/999", wait: 30 * time.Second}
 	candidate := testCandidate("interrupted")
 	candidate.ScaleSet = "held-unhealthy"
 	if err := a.run(context.Background(), release, activateCandidate(candidate)); err != nil {

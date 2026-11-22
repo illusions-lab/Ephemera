@@ -98,7 +98,18 @@ The [architecture document](ARCHITECTURE.md#runner-execution-design) covers sche
 | Configuration | `/etc/ephemera/config.yaml` | `~/Library/Application Support/Ephemera/config.yaml` |
 | Setup and apply | `sudo ephe setup` | `ephe setup` |
 | Diagnostics | `sudo ephe doctor` | `ephe doctor` |
-| Service logs | `sudo journalctl -u ephemera.service -f` | `~/Library/Application Support/Ephemera/logs/daemon.log` |
+| Service logs | `sudo journalctl -u ephemera.service -f` | `tail -F "$HOME/Library/Logs/Ephemera/daemon.log"` |
+
+On Linux, systemd-journald rotates and prunes service logs according to the host
+policy. It stores persistent journals under `/var/log/journal` and volatile
+journals under `/run/log/journal`. Upstream defaults limit shared journal use to
+10% of the filesystem, capped at 4 GiB, subject to available space and local
+configuration. See [journald.conf](https://www.freedesktop.org/software/systemd/man/latest/journald.conf.html).
+
+On macOS, Ephemera rotates the service log at 10 MiB, keeps up to five gzip
+archives, and prunes archives older than 14 days when opening or rotating the
+log. After upgrading, logs from older versions can still be read at
+`~/Library/Application Support/Ephemera/logs/daemon.log`.
 
 `ephe status` shows the service, GitHub connection, intake mode, and latest job counts. Use `--watch` for continuous updates and `--json` for scripts. Together they emit one JSON object per refresh. If the daemon socket is unavailable, the CLI reports the supervisor state and marks live data as unavailable.
 

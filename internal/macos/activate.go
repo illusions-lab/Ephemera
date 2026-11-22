@@ -23,8 +23,8 @@ type Candidate struct {
 }
 
 type activation struct {
-	root, plist, domain string
-	wait                time.Duration
+	root, plist, domain, logFile string
+	wait                         time.Duration
 }
 
 type previousService struct {
@@ -38,7 +38,13 @@ func Activate(ctx context.Context, release string, prepare func() (*Candidate, e
 	if err != nil {
 		return err
 	}
-	a := activation{Root(), filepath.Join(home, "Library", "LaunchAgents", Label+".plist"), fmt.Sprintf("gui/%d", os.Getuid()), 45 * time.Second}
+	a := activation{
+		root:    Root(),
+		plist:   filepath.Join(home, "Library", "LaunchAgents", Label+".plist"),
+		domain:  fmt.Sprintf("gui/%d", os.Getuid()),
+		logFile: filepath.Join(home, "Library", "Logs", "Ephemera", "daemon.log"),
+		wait:    45 * time.Second,
+	}
 	return a.run(ctx, release, prepare)
 }
 
@@ -99,13 +105,12 @@ func (a activation) run(ctx context.Context, release string, prepare func() (*Ca
 	if err != nil {
 		return err
 	}
-	logs := filepath.Join(a.root, "logs")
-	for _, dir := range []string{logs, filepath.Dir(a.plist)} {
+	for _, dir := range []string{filepath.Dir(a.logFile), filepath.Dir(a.plist)} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			return err
 		}
 	}
-	plist, err := launchAgent(release, snapshot, id, filepath.Join(logs, "daemon.log"))
+	plist, err := launchAgent(release, snapshot, id, a.logFile)
 	if err != nil {
 		return err
 	}
@@ -143,7 +148,7 @@ func (a activation) run(ctx context.Context, release string, prepare func() (*Ca
 		return err
 	}
 	if err := a.waitReady(ctx, id, candidate); err != nil {
-		return fmt.Errorf("candidate LaunchAgent did not become healthy; see %s: %w", filepath.Join(logs, "daemon.log"), err)
+		return fmt.Errorf("candidate LaunchAgent did not become healthy; see %s and the macOS system log: %w", a.logFile, err)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -280,13 +285,12 @@ func launchAgent(release, snapshot, id, log string) ([]byte, error) {
 			"--config", filepath.Join(snapshot, "config.yaml"),
 			"--github-app-key", filepath.Join(snapshot, "github-app.pem"),
 			"--activation-id", id,
+			"--log-file", log,
 		}},
 		{"KeepAlive", true},
 		{"ThrottleInterval", 10},
 		{"ExitTimeOut", 60},
 		{"Umask", 63},
-		{"StandardOutPath", log},
-		{"StandardErrorPath", log},
 	}}
 	body, err := xml.MarshalIndent(plist, "", "  ")
 	return append([]byte(xml.Header), body...), err
