@@ -78,6 +78,12 @@ install_mac() {
     [[ -z "$config$key" ]] || die 'input files require --non-interactive'
     [[ "$existing_app" == false || -z "$app_name" ]] || die 'choose either --existing-app or --app-name'
   fi
+  printf 'Current: '
+  if [[ -x "$root/current/ephemera" ]]; then
+    "$root/current/ephemera" version || printf 'unavailable\n'
+  else
+    printf 'none\n'
+  fi
   work=$(mktemp -d "$root/.install.XXXXXX")
   trap 'rm -rf "$work"' EXIT
   trap 'exit 130' INT
@@ -90,6 +96,7 @@ install_mac() {
       version=${version#"$releases/tag/"}
     fi
     [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die 'invalid release tag'
+    printf 'Target: %s\n' "$version"
     archive=ephemera_darwin_arm64.tar.gz
     "${fetch[@]}" -o "$work/checksums.txt" "$releases/download/$version/checksums.txt"
     digest=$(awk -v asset="$archive" '$2 == asset || $2 == "*" asset {print $1}' "$work/checksums.txt")
@@ -110,6 +117,7 @@ install_mac() {
     install -m 0700 "$bundle/$name" "$work/candidate/$name"
   done
   identity=$("$work/candidate/ephemera" version)
+  if ! "$online"; then printf 'Target: %s\n' "$identity"; fi
   [[ -n "$identity" && "$identity" == "$("$work/candidate/ephemerad" --version)" ]] ||
     die 'bundle versions or commits differ'
   [[ -z "$version" || "${identity%% *}" == "$version" ]] || die 'bundle version does not match release tag'

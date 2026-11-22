@@ -34,34 +34,31 @@ destination=/etc/ephemera/config.yaml
 credential=/etc/ephemera/credentials/github-app.pem
 releases=https://github.com/illusions-lab/Ephemera/releases
 fetch=(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --retry 2)
-online=true
-[[ -z "$bundle" ]] || online=false
 case "$(uname -m)" in
   x86_64) arch=amd64 ;;
   aarch64) arch=arm64 ;;
   *) die 'only Linux amd64 and arm64 are supported' ;;
 esac
-install_cloudflared() {
-  local version=2026.11.1
-  local digest=97bb3b02d23a5980fc9c15a1a270e692da1923f103f920d5b16d4931d5ab55e7
-  local asset=cloudflared-linux-$arch
-  if [[ "$arch" == arm64 ]]; then digest=b155cec3e48e489cfb8e5c602769fb8c771083018d8881d68b4d18a791567c5a; fi
-  if [[ -x "$root/tools/cloudflared" ]] || command -v cloudflared >/dev/null; then return 0; fi
-  printf 'Preparing cloudflared for browser setup...\n'
-  "${fetch[@]}" --retry 0 --connect-timeout 8 --max-time 60 -o "$temp/$asset" \
-    "https://github.com/cloudflare/cloudflared/releases/download/$version/$asset" || return 1
-  (cd "$temp" && printf '%s  %s\n' "$digest" "$asset" | sha256sum -c -) || return 1
-  install -d -m 0755 "$root/tools" || return 1
-  chmod 0755 "$temp/$asset" && mv -Tf "$temp/$asset" "$root/tools/cloudflared"
-}
 latest_version() {
   local url
   url=$("${fetch[@]}" --output /dev/null --write-out '%{url_effective}' "$releases/latest") || die 'could not resolve latest release'
   [[ "$url" == "$releases/tag/"* ]] || die 'could not resolve latest release tag'
   printf '%s\n' "${url#"$releases/tag/"}"
 }
+show_current_version() {
+  printf 'Current: '
+  if [[ -x "$current/ephemera" ]]; then
+    "$current/ephemera" version || printf 'unavailable\n'
+  elif [[ -x /usr/local/bin/ephemera ]]; then
+    /usr/local/bin/ephemera version || printf 'unavailable\n'
+  elif [[ "$mode" == check ]] && command -v ephemera >/dev/null; then
+    ephemera version || printf 'unavailable\n'
+  else
+    printf 'none\n'
+  fi
+}
 if [[ "$mode" == check ]]; then
-  printf 'Current: '; if [[ -x "$current/ephemera" ]]; then "$current/ephemera" version; elif command -v ephemera >/dev/null; then ephemera version || true; else echo none; fi
+  show_current_version
   printf 'Staged: '; if [[ -x "$staged/ephemera" ]]; then "$staged/ephemera" version; else echo none; fi
   latest=$(latest_version)
   printf 'Latest: %s\n' "$latest"
@@ -69,6 +66,7 @@ if [[ "$mode" == check ]]; then
 fi
 [[ "$(uname -s)" == Linux && "$EUID" -eq 0 ]] || die 'installation requires Linux and root'
 if [[ ! -d /run/systemd/system ]] || ! command -v systemctl >/dev/null; then die 'installation requires a running systemd instance'; fi
+if [[ -z "$recovery_mode" ]]; then show_current_version; fi
 mkdir -p /run/lock
 exec 9>/run/lock/ephemera-install.lock
 if ! flock -n 9; then
@@ -182,9 +180,12 @@ if "$first" && "$non_interactive" && [[ -n "$key" && ( -e "$credential" || -L "$
   replace_residue=true
 fi
 if [[ "$mode" != apply ]]; then
+  online_bundle=false
   if [[ -z "$bundle" ]]; then
+    online_bundle=true
     [[ -n "$version" ]] || version=$(latest_version)
     [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die 'invalid release tag'
+    printf 'Target: %s\n' "$version"
     if [[ "$mode" == stage && -x "$current/ephemera" ]]; then
       installed=$("$current/ephemera" version | cut -d' ' -f1)
       if [[ "$installed" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "$(printf '%s\n%s\n' "$installed" "$version" | sort -V | tail -n1)" == "$installed" ]]; then
@@ -208,6 +209,7 @@ if [[ "$mode" != apply ]]; then
   install -m 0755 "$bundle/ephemera" "$temp/ephemera"
   install -m 0755 "$bundle/ephemerad" "$temp/ephemerad"
   identity=$("$temp/ephemera" version)
+  if ! "$online_bundle"; then printf 'Target: %s\n' "$identity"; fi
   [[ "$identity" == "$("$temp/ephemerad" --version)" ]] || die 'binary versions or commits differ'
   [[ -z "$version" || "${identity%% *}" == "$version" ]] || die 'bundle version does not match release tag'
   if "$non_interactive" && { "$first" || "$resume"; }; then
@@ -234,6 +236,7 @@ if [[ "$mode" != apply ]]; then
   fi
 fi
 [[ -x "$staged/ephemera" ]] || die 'no staged release'
+if [[ "$mode" == apply ]]; then printf 'Target: %s\n' "$("$staged/ephemera" version)"; fi
 [[ ! -f "$destination" ]] || "$staged/ephemera" config validate --config "$destination"
 # Preserve an existing flat installation as a rollback target before replacing it.
 if [[ ! -L "$current" && -f /usr/local/bin/ephemera && ! -L /usr/local/bin/ephemera ]]; then
@@ -308,9 +311,6 @@ if "$first" && ! "$non_interactive" && [[ "$mode" == install ]]; then
   finish_transaction; rm -f "$staged"
   printf 'Ephemera installed.\n'
   if ( : <> /dev/tty ) 2>/dev/null; then
-    if "$online" && ! install_cloudflared; then
-      printf 'Cloudflare dependency unavailable. Local browser and SSH setup are available.\n' >&2
-    fi
     flock -u 9
     /usr/local/bin/ephe setup </dev/tty >/dev/tty 2>&1
   else

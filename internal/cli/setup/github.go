@@ -177,8 +177,8 @@ type githubPageData struct {
 	CreateURLs                                                                                []githubCreateOption
 }
 
-func createGitHubApp(scaleSet, appName string, systemSetup bool) (githubConnection, error) {
-	useTunnel := systemSetup && !browserOnThisHost()
+func createGitHubApp(scaleSet, appName string, systemSetup, allowTunnel bool) (githubConnection, error) {
+	useTunnel := allowTunnel && !browserOnThisHost()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	wait, cancel := context.WithTimeout(ctx, 15*time.Minute)

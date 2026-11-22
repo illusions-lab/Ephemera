@@ -77,7 +77,7 @@ func configureFirstRun(path, appName string, existingApp, systemSetup bool, cfg 
 	if err := ImageUpdatePrompt(&cfg); err != nil {
 		return err
 	}
-	connection, err := createGitHubApp(cfg.GitHub.ScaleSetName, appName, systemSetup)
+	connection, err := createGitHubApp(cfg.GitHub.ScaleSetName, appName, systemSetup, systemSetup || cfg.VM.Backend == "tart")
 	if err != nil {
 		return err
 	}
