@@ -104,11 +104,6 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 	if err != nil {
 		return err
 	}
-	if selected.backend != nil {
-		if err := selected.backend.Check(ctx); err != nil {
-			return fmt.Errorf("check VM backend: %w", err)
-		}
-	}
 	if opts.StatusSocket != "" {
 		if usesTartSocket {
 			if err := status.RemoveStale(opts.StatusSocket, string(store)); err != nil {
@@ -141,16 +136,24 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 	if err != nil {
 		return fmt.Errorf("determine session owner: %w", err)
 	}
-	if err := report("PreparingImage"); err != nil {
-		return err
-	}
-	imageID, checkImage, err := selected.prepareImage(ctx)
-	if err != nil {
-		return fmt.Errorf("prepare runner image: %w", err)
-	}
-	current.GitHub = "connecting"
-	if err := report("Connecting"); err != nil {
-		return err
+	prepareCurrent := func() (string, func() error, error) {
+		if err := report("PreparingImage"); err != nil {
+			return "", nil, err
+		}
+		if selected.backend != nil {
+			if err := selected.backend.Check(ctx); err != nil {
+				return "", nil, fmt.Errorf("check VM backend: %w", err)
+			}
+		}
+		id, check, err := selected.prepareImage(ctx)
+		if err == nil && cfg.Runner.Execute {
+			err = check()
+		}
+		if err != nil {
+			return "", nil, fmt.Errorf("prepare runner image: %w", err)
+		}
+		current.GitHub = "connecting"
+		return id, check, report("Connecting")
 	}
 	if opts.Claim {
 		logger.Warn("Acquiring test jobs without launching runners")
@@ -165,13 +168,16 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 		Owner:          owner,
 		Create:         opts.Create,
 		Claim:          opts.Claim,
-		CheckImage:     checkImage,
 	}
 	if cfg.Runner.Execute {
-		if err := checkImage(); err != nil {
+		if err := report("Recovering"); err != nil {
 			return err
 		}
-		return execute(ctx, cfg, orderConfig, imageID, selected.namespace, store, selected.backend, logger, listen,
+		runners, err := orders.NewRunners(orderConfig)
+		if err != nil {
+			return err
+		}
+		return execute(ctx, cfg, orderConfig, selected.namespace, store, selected.backend, runners, logger, listen, prepareCurrent,
 			func(connected, recovering, stopping bool, update orders.Update, counts status.Instances) error {
 				current.Instances = &counts
 				current.GitHub = "disconnected"
@@ -199,6 +205,11 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 				return nil
 			})
 	}
+	_, checkImage, err := prepareCurrent()
+	if err != nil {
+		return err
+	}
+	orderConfig.CheckImage = checkImage
 	healthy := false
 	return listen(ctx, orderConfig, logger, func(_ context.Context, update orders.Update) error {
 		current.Demand = snapshotDemand(update)

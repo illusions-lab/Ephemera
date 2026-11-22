@@ -101,7 +101,7 @@ func (r *reconciler) submit(ctx context.Context, event runnerEvent) error {
 	}
 }
 
-func (r *reconciler) run(ctx context.Context, restored []vm.Instance, recovered chan struct{}, capacity func(int)) error {
+func (r *reconciler) run(ctx context.Context, restored []vm.Instance, afterRecovery func() error, capacity func(int)) error {
 	workers, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -136,21 +136,19 @@ func (r *reconciler) run(ctx context.Context, restored []vm.Instance, recovered 
 			r.apply(event)
 		}
 		recovering := hasRecovery(r.instances)
-		if !recovering && recovered != nil {
-			close(recovered)
-			recovered = nil
+		if !recovering && afterRecovery != nil && ctx.Err() == nil && !r.draining {
+			if err := afterRecovery(); err != nil {
+				return err
+			}
+			afterRecovery = nil
 		}
 		free, counts := r.reconcile(workers, time.Now())
 		if ctx.Err() != nil {
 			free = 0
 		}
-		capacity(free)
-		if event.reply != nil {
-			close(event.reply)
-		}
 		if err := r.report(r.connected, recovering, r.draining, r.update, counts); err != nil && reportErr == nil {
 			reportErr = err
-			capacity(0)
+			free = 0
 			r.draining = true
 			r.connected = false
 			r.stopAt = time.Now()
@@ -158,6 +156,10 @@ func (r *reconciler) run(ctx context.Context, restored []vm.Instance, recovered 
 			timer := time.NewTimer(55 * time.Second)
 			defer timer.Stop()
 			shutdownDeadline = timer.C
+		}
+		capacity(free)
+		if event.reply != nil {
+			close(event.reply)
 		}
 	}
 }
@@ -432,7 +434,7 @@ func (r *reconciler) reclaim(ctx context.Context, i vm.Instance) (string, error)
 
 func validateRestored(instances []vm.Instance, template vm.Instance) error {
 	for _, i := range instances {
-		if i.Scope != template.Scope || i.Backend != template.Backend || i.Namespace != template.Namespace {
+		if i.Scope != template.Scope || i.ScaleSet != template.ScaleSet || i.Backend != template.Backend || i.Namespace != template.Namespace {
 			return fmt.Errorf("instance %s requires its original GitHub scope, VM backend and resource directory for recovery", i.ID)
 		}
 	}

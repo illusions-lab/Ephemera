@@ -116,7 +116,9 @@ func newFakeReconciler(t *testing.T, store instanceStore, restored []vm.Instance
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- r.run(ctx, restored, recovered, func(free int) { capacity.Store(int32(free)) }) }()
+	go func() {
+		done <- r.run(ctx, restored, func() error { close(recovered); return nil }, func(free int) { capacity.Store(int32(free)) })
+	}()
 	t.Cleanup(func() {
 		fake.busy.Store(false)
 		cancel()
