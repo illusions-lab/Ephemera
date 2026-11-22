@@ -6,29 +6,30 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"sync/atomic"
 
+	"github.com/illusions-lab/Ephemera/internal/backend"
 	"github.com/illusions-lab/Ephemera/internal/config"
-	"github.com/illusions-lab/Ephemera/internal/image"
+	"github.com/illusions-lab/Ephemera/internal/host"
 	"github.com/illusions-lab/Ephemera/internal/orders"
 	"github.com/illusions-lab/Ephemera/internal/status"
-	"github.com/illusions-lab/Ephemera/internal/vm"
 )
 
 type Options struct {
 	ConfigPath, CacheDir, KeyPath, StatusSocket, StateDir string
+	ImageChannelFile                                      string
+	ActivationID                                          string
 	Create, Claim                                         bool
 }
 
 func Run(ctx context.Context, opts Options, logger *slog.Logger) error {
-	return run(ctx, opts, logger, prepareImage, orders.Listen)
+	return run(ctx, opts, logger, backend.BuildImage, orders.Listen)
 }
 func run(ctx context.Context, opts Options, logger *slog.Logger,
-	prepare func(context.Context, string, image.Config, *slog.Logger) (string, func() error, error),
+	prepare backend.ImageBuilder,
 	listen func(context.Context, orders.Config, *slog.Logger, func(context.Context, orders.Update) error) error,
 ) (result error) {
-	current := status.Snapshot{Phase: "Starting", GitHub: "pending", Intake: "observing"}
+	current := status.Snapshot{ActivationID: opts.ActivationID, Phase: "Starting", GitHub: "pending", Intake: "observing"}
 	if opts.Claim {
 		current.Intake = "test-claim"
 	}
@@ -38,15 +39,6 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 		published.Store(&snapshot)
 	}
 	publish()
-	if opts.StatusSocket != "" {
-		closeStatus, err := status.Listen(opts.StatusSocket, func() status.Snapshot {
-			return *published.Load()
-		})
-		if err != nil {
-			return err
-		}
-		defer closeStatus()
-	}
 	report := func(phase string) error {
 		current.Phase = phase
 		publish()
@@ -76,9 +68,6 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 			logger.Warn("Could not report service health", "state", state, "error", err)
 		}
 	}()
-	if err := report("Starting"); err != nil {
-		return err
-	}
 	cfg, err := config.Load(opts.ConfigPath)
 	if err != nil {
 		return err
@@ -89,37 +78,39 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 	if cfg.Runner.Execute && opts.Claim {
 		return errors.New("runner.execute cannot be combined with --claim")
 	}
+	root := opts.StateDir
+	if root == "" {
+		root = host.StateDir()
+	}
 	var store instanceStore
-	var backend vm.Backend
 	if cfg.Runner.Execute {
 		current.Intake = "executing"
-		root := opts.StateDir
-		if root == "" {
-			root = DefaultStateDir
-		}
+	}
+	if cfg.Runner.Execute || host.PrivateStatusSocket(opts.StatusSocket) {
 		var unlock func()
 		store, unlock, err = openInstances(root)
 		if err != nil {
 			return err
 		}
 		defer unlock()
-		backend, err = vm.NewQEMU(vm.QEMUConfig{Root: root, VCPUs: cfg.VM.VCPUs, MemoryMiB: cfg.VM.MemoryMiB})
+	}
+	selected, err := backend.Select(cfg, root, opts.CacheDir, logger, prepare, opts.Claim)
+	if err != nil {
+		return err
+	}
+	if opts.StatusSocket != "" {
+		closeStatus, err := host.ListenStatus(opts.StatusSocket, string(store), func() status.Snapshot { return *published.Load() })
 		if err != nil {
 			return err
 		}
-		if err := backend.Check(ctx); err != nil {
-			return fmt.Errorf("check QEMU backend: %w", err)
-		}
+		defer closeStatus()
 	}
-	publish()
+	if err := report("Starting"); err != nil {
+		return err
+	}
 	keyPath := opts.KeyPath
 	if keyPath == "" {
-		dir := os.Getenv("CREDENTIALS_DIRECTORY")
-		if dir != "" {
-			keyPath = filepath.Join(dir, "github-app-key")
-		} else {
-			keyPath = filepath.Join(config.Dir, "credentials", "github-app.pem")
-		}
+		keyPath = host.DaemonKeyPath()
 	}
 	key, err := config.ReadKey(keyPath)
 	if err != nil {
@@ -129,21 +120,22 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 	if err != nil {
 		return fmt.Errorf("determine session owner: %w", err)
 	}
-	if err := report("PreparingImage"); err != nil {
-		return err
-	}
-	imageCfg, err := cfg.ImageConfig()
-	if err != nil {
-		return fmt.Errorf("prepare runner image: %w", err)
-	}
-	imagePath, checkImage, err := prepare(ctx, opts.CacheDir, imageCfg, logger)
-	if err != nil {
-		return fmt.Errorf("prepare runner image: %w", err)
-	}
-	logger.Info("Runner image ready", "path", imagePath)
-	current.GitHub = "connecting"
-	if err := report("Connecting"); err != nil {
-		return err
+	prepareCurrent := func() (string, func() error, error) {
+		if cfg.Runner.Execute {
+			current.Instances = &status.Instances{}
+		}
+		if err := report("PreparingImage"); err != nil {
+			return "", nil, err
+		}
+		id, check, err := selected.PrepareImage(ctx)
+		if err == nil && cfg.Runner.Execute {
+			err = check()
+		}
+		if err != nil {
+			return "", nil, fmt.Errorf("prepare runner image: %w", err)
+		}
+		current.GitHub = "connecting"
+		return id, check, report("Connecting")
 	}
 	if opts.Claim {
 		logger.Warn("Acquiring test jobs without launching runners")
@@ -158,15 +150,20 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 		Owner:          owner,
 		Create:         opts.Create,
 		Claim:          opts.Claim,
-		CheckImage:     checkImage,
 	}
 	if cfg.Runner.Execute {
-		if err := checkImage(); err != nil {
+		if err := report("Recovering"); err != nil {
 			return err
 		}
-		return execute(ctx, cfg, orderConfig, imagePath, store, backend, logger, listen,
+		runners, err := orders.NewRunners(orderConfig)
+		if err != nil {
+			return err
+		}
+		updates := newImageUpdates(cfg, root, selected, logger, prepare, opts.ImageChannelFile)
+		return execute(ctx, cfg, orderConfig, selected.Namespace, store, selected.VM, runners, logger, listen, prepareCurrent,
 			func(connected, recovering, stopping bool, update orders.Update, counts status.Instances) error {
 				current.Instances = &counts
+				current.ImageUpdate = updates.snapshot()
 				current.GitHub = "disconnected"
 				if connected {
 					current.GitHub = "connected"
@@ -190,14 +187,21 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 				}
 				publish()
 				return nil
-			})
+			}, updates)
 	}
+	_, checkImage, err := prepareCurrent()
+	if err != nil {
+		return err
+	}
+	orderConfig.CheckImage = checkImage
 	healthy := false
 	return listen(ctx, orderConfig, logger, func(_ context.Context, update orders.Update) error {
 		current.Demand = snapshotDemand(update)
 		if !healthy {
-			if err := checkImage(); err != nil {
-				return err
+			if checkImage != nil {
+				if err := checkImage(); err != nil {
+					return err
+				}
 			}
 			current.GitHub = "connected"
 			if err := report("Healthy"); err != nil {
@@ -226,11 +230,6 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 		}
 		return nil
 	})
-}
-
-func prepareImage(ctx context.Context, cache string, cfg image.Config, logger *slog.Logger) (string, func() error, error) {
-	prepared, err := image.Prepare(ctx, cache, cfg, logger)
-	return prepared.Path, prepared.Check, err
 }
 
 func snapshotDemand(update orders.Update) *status.Demand {

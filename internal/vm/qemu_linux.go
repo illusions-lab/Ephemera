@@ -1,3 +1,5 @@
+//go:build linux && (amd64 || arm64)
+
 package vm
 
 import (
@@ -8,42 +10,55 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 
 	"github.com/illusions-lab/Ephemera/internal/image"
+	"github.com/illusions-lab/Ephemera/internal/qemuplatform"
 	"golang.org/x/sys/unix"
 )
 
 type qemu struct {
 	QEMUConfig
-	binary string
+	binary   string
+	platform qemuplatform.Platform
 }
 
 func NewQEMU(cfg QEMUConfig) (Backend, error) {
-	binary, err := exec.LookPath("qemu-system-x86_64")
+	platform, err := qemuplatform.ForArch(runtime.GOARCH)
 	if err != nil {
 		return nil, err
 	}
-	binary, err = filepath.Abs(binary)
-	if err != nil {
-		return nil, err
-	}
-	binary, err = filepath.EvalSymlinks(binary)
-	return &qemu{QEMUConfig: cfg, binary: binary}, err
+	return &qemu{QEMUConfig: cfg, platform: platform}, nil
 }
 
 func (q *qemu) Check(_ context.Context) error {
 	if os.Geteuid() == 0 {
 		return errors.New("run QEMU execution under an unprivileged service account")
 	}
+	// Finding the executable is only required for new VMs. Recovery
+	// recognizes old processes by their recorded instance identity.
+	binary, err := exec.LookPath(q.platform.Binary)
+	if err != nil {
+		return err
+	}
+	binary, err = filepath.Abs(binary)
+	if err != nil {
+		return err
+	}
+	q.binary, err = filepath.EvalSymlinks(binary)
+	if err != nil {
+		return err
+	}
 	for _, tool := range []string{"qemu-img", "cloud-localds"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			return err
 		}
+	}
+	if err := q.platform.CheckFirmware(); err != nil {
+		return err
 	}
 	kvm, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
 	if err != nil {
@@ -96,13 +111,19 @@ func (q *qemu) Start(ctx context.Context, i Instance, jit string) (Process, erro
 	}
 	ready := make(chan struct{})
 	exited := make(chan error, 1)
-	cmd := exec.Command(q.binary,
-		"-name", i.Resource, "-uuid", i.ID, "-machine", "accel=kvm", "-cpu", "host",
+	boot, err := q.platform.BootArgs(dir, true)
+	if err != nil {
+		return Process{}, err
+	}
+	args := []string{
+		"-name", i.Resource, "-uuid", i.ID,
 		"-m", strconv.Itoa(q.MemoryMiB), "-smp", strconv.Itoa(q.VCPUs),
-		"-boot", "order=c", "-display", "none", "-monitor", "none",
-		"-serial", "null", "-serial", "stdio", "-no-reboot",
+		"-display", "none", "-monitor", "none",
+		"-no-reboot",
 		"-nic", "user,model=virtio-net-pci",
-		"-drive", q.disk(i), "-drive", drive(seed)+",format=raw,if=virtio,readonly=on")
+		"-drive", q.disk(i), "-drive", qemuplatform.FileOption(seed) + ",format=raw,if=virtio,readonly=on"}
+	args = append(args, q.platform.StatusArgs("")...)
+	cmd := exec.Command(q.binary, append(args, boot...)...)
 	cmd.Stdout = &readiness{ready: ready}
 	// Keep the launching Linux thread alive until QEMU exits. The kernel
 	// tracks this thread for the parent-death signal.
@@ -124,13 +145,9 @@ func (q *qemu) Start(ctx context.Context, i Instance, jit string) (Process, erro
 	return Process{Ready: ready, Exited: exited}, nil
 }
 
-func drive(path string) string { return "file=" + strings.ReplaceAll(path, ",", ",,") }
-
 func (q *qemu) disk(i Instance) string {
-	return drive(filepath.Join(q.directory(i), "disk.qcow2")) + ",format=qcow2,if=virtio"
+	return qemuplatform.FileOption(filepath.Join(q.directory(i), "disk.qcow2")) + ",format=qcow2,if=virtio"
 }
-
-var listening = regexp.MustCompile(`^\d{4}-\d\d-\d\d \d\d:\d\d:\d\dZ: Listening for Jobs$`)
 
 type readiness struct {
 	ready    chan struct{}
@@ -144,7 +161,7 @@ func (r *readiness) Write(data []byte) (int, error) {
 			break
 		}
 		if b == '\n' {
-			if !r.overflow && listening.Match(bytes.TrimSuffix(r.line, []byte("\r"))) {
+			if !r.overflow && runnerReadyLine.Match(bytes.TrimSuffix(r.line, []byte("\r"))) {
 				close(r.ready)
 				r.ready = nil
 			}

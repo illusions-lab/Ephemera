@@ -9,7 +9,9 @@ require (
 	github.com/golang-jwt/jwt/v4 v4.5.2
 	github.com/google/uuid v1.6.0
 	go.yaml.in/yaml/v3 v3.0.6
+	golang.org/x/mod v0.33.0
 	golang.org/x/sys v0.42.0
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
 
 require (

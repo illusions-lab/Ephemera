@@ -1,11 +1,29 @@
 name: Dedicated Scale Set acceptance
+run-name: Dedicated Scale Set acceptance ${{ inputs.correlation }}
 on:
   workflow_dispatch:
     inputs:
+      correlation:
+        description: Optional identifier for a coordinating acceptance run
+        type: string
+      hold_seconds:
+        description: Seconds to keep the guest running
+        type: number
+        default: 60
       scale_set:
         description: Runner label of the dedicated test Scale Set
         required: true
         type: string
+      guest_os:
+        description: Expected guest operating system
+        type: choice
+        options: [linux, macos]
+        default: linux
+      arch:
+        description: Expected guest architecture
+        type: choice
+        options: [amd64, arm64]
+        default: amd64
       overlap:
         description: Run two overlapping jobs
         default: false
@@ -16,7 +34,7 @@ permissions: {}
 jobs:
   guest:
     runs-on: ${{ inputs.scale_set }}
-    timeout-minutes: 10
+    timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix:
@@ -24,10 +42,26 @@ jobs:
     steps:
       - name: Record guest identity
         shell: bash
+        env:
+          EXPECTED_OS: ${{ inputs.guest_os }}
+          EXPECTED_ARCH: ${{ inputs.arch }}
+          HOLD_SECONDS: ${{ inputs.hold_seconds }}
         run: |
           set -euo pipefail
-          boot_id=$(cat /proc/sys/kernel/random/boot_id)
-          instance_id=$(cloud-init query instance_id)
+          case "$EXPECTED_OS:$EXPECTED_ARCH" in
+            linux:amd64) test "$(uname -sm)" = "Linux x86_64" ;;
+            linux:arm64) test "$(uname -sm)" = "Linux aarch64" ;;
+            macos:arm64) test "$(uname -sm)" = "Darwin arm64" ;;
+            *) exit 1 ;;
+          esac
+          started_at=$(date -u +%FT%TZ)
+          if [[ "$EXPECTED_OS" == macos ]]; then
+            boot_id=$(sysctl -n kern.bootsessionuuid)
+            instance_id=${RUNNER_NAME#ephemera-}
+          else
+            boot_id=$(cat /proc/sys/kernel/random/boot_id)
+            instance_id=$(cloud-init query instance_id)
+          fi
           [[ "$instance_id" =~ ^[0-9a-f-]{36}$ ]]
           [[ "$RUNNER_NAME" == "ephemera-$instance_id" ]]
           {
@@ -35,4 +69,6 @@ jobs:
             printf 'Instance %s\n\n' "$instance_id"
             printf 'Boot %s\n' "$boot_id"
           } >> "$GITHUB_STEP_SUMMARY"
-          sleep 60
+          [[ "$HOLD_SECONDS" =~ ^[0-9]+$ ]] && (( HOLD_SECONDS <= 3600 ))
+          sleep "$HOLD_SECONDS"
+          printf "Started %s\n\nFinished %s\n" "$started_at" "$(date -u +%FT%TZ)" >> "$GITHUB_STEP_SUMMARY"

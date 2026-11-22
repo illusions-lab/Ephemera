@@ -18,7 +18,7 @@ import (
 
 func Run(path, appName string, existingApp bool) error {
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-		if err := configureFirstRun(path, appName, existingApp, true); err != nil {
+		if err := configureFirstRun(path, appName, existingApp, true, config.Defaults(), nil); err != nil {
 			return finishSetup(err)
 		}
 		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
@@ -63,18 +63,20 @@ func Run(path, appName string, existingApp bool) error {
 // RunLocal configures GitHub credentials and runner settings without controlling a service.
 func RunLocal(path, appName string, existingApp bool) error {
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-		return finishSetup(configureFirstRun(path, appName, existingApp, false))
+		return finishSetup(configureFirstRun(path, appName, existingApp, false, config.Defaults(), nil))
 	} else if err != nil {
 		return err
 	}
 	return finishSetup(editConfig(path))
 }
 
-func configureFirstRun(path, appName string, existingApp, systemSetup bool) error {
+func configureFirstRun(path, appName string, existingApp, systemSetup bool, cfg config.Config, validate func(config.Config, []byte) error) error {
 	if existingApp {
-		return editConfig(path)
+		return editWithDefaults(path, cfg, validate)
 	}
-	cfg := config.Defaults()
+	if err := ImageUpdatePrompt(&cfg); err != nil {
+		return err
+	}
 	connection, err := createGitHubApp(cfg.GitHub.ScaleSetName, appName, systemSetup)
 	if err != nil {
 		return err
@@ -91,6 +93,11 @@ func configureFirstRun(path, appName string, existingApp, systemSetup bool) erro
 	ok, err := confirmSetup("Save this configuration?", cfg.GitHub.ScopeURL+" · "+cfg.GitHub.ScaleSetName)
 	if err != nil || !ok {
 		return err
+	}
+	if validate != nil {
+		if err := validate(cfg, connection.Key); err != nil {
+			return err
+		}
 	}
 	if err := config.WriteSetup(filepath.Dir(path), data, connection.Key); err != nil {
 		return err
@@ -116,11 +123,13 @@ func finishSetup(err error) error {
 	return err
 }
 
-func editConfig(path string) error {
+func editConfig(path string) error { return editWithDefaults(path, config.Defaults(), nil) }
+
+func editWithDefaults(path string, defaults config.Config, validate func(config.Config, []byte) error) error {
 	cfg, err := config.Load(path)
 	initial := errors.Is(err, os.ErrNotExist)
 	if initial {
-		cfg = config.Defaults()
+		cfg = defaults
 	} else if err != nil {
 		return err
 	}
@@ -168,6 +177,9 @@ func editConfig(path string) error {
 		if cfg.VM.Image != beforeImage || cfg.VM.Arch != beforeArch {
 			cfg.VM.Profile = ""
 		}
+	}
+	if err := ImageUpdatePrompt(&cfg); err != nil {
+		return err
 	}
 	var key []byte
 	app, installation := "", ""
@@ -217,6 +229,11 @@ func editConfig(path string) error {
 		return err
 	}
 	if initial {
+		if validate != nil {
+			if err := validate(cfg, key); err != nil {
+				return err
+			}
+		}
 		return config.WriteSetup(filepath.Dir(path), data, key)
 	}
 	return saveEditedConfig(path, before, data)
@@ -260,12 +277,25 @@ func confirmSetup(title, description string) (bool, error) {
 }
 
 func applyService(path string) error {
-	if _, err := config.Load(path); err != nil {
+	cfg, err := config.Load(path)
+	if err != nil {
 		return err
 	}
 	ok, err := confirmSetup("Apply configuration now?", "This starts Ephemera or restarts the running service.")
 	if err != nil || !ok {
 		return err
+	}
+	if cfg.Runner.ImageAutoUpdate == nil {
+		if err := ImageUpdatePrompt(&cfg); err != nil {
+			return err
+		}
+		data, err := yaml.Marshal(cfg)
+		if err != nil {
+			return err
+		}
+		if err := config.Replace(path, data); err != nil {
+			return err
+		}
 	}
 	for _, operation := range []string{"enable", "restart"} {
 		cmd := exec.Command("systemctl", operation, "ephemera.service")
@@ -279,4 +309,22 @@ func applyService(path string) error {
 	}
 	fmt.Println("Ephemera service is active.")
 	return nil
+}
+
+func ConfigureMac(path, appName string, existingApp bool, validate func(config.Config, []byte) error) error {
+	return finishSetup(configureFirstRun(path, appName, existingApp, false, config.MacDefaults(), validate))
+}
+
+func ImageUpdatePrompt(cfg *config.Config) error {
+	enabled := cfg.Runner.ImageAutoUpdate == nil || *cfg.Runner.ImageAutoUpdate
+	if err := huh.NewConfirm().Title("Enable automatic runner image updates?").Value(&enabled).Run(); err != nil {
+		return err
+	}
+	cfg.Runner.ImageAutoUpdate = &enabled
+	return nil
+}
+
+func MacServerPrompt(preview string) (bool, error) {
+	return confirmSetup("Is this Mac dedicated to running Ephemera runners?",
+		"Yes applies these AC power settings. The default is No.\n"+preview)
 }

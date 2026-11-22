@@ -1,8 +1,10 @@
 package config
 
 import (
+	"go.yaml.in/yaml/v3"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -86,5 +88,58 @@ func assertSetupFile(t *testing.T, path, content string, mode os.FileMode) {
 	}
 	if info, err := os.Lstat(path); err != nil || info.Mode() != mode {
 		t.Fatalf("%s metadata = %v, %v", path, info, err)
+	}
+}
+
+func TestTartConfigRequiresPinnedMacOSImage(t *testing.T) {
+	cfg := Defaults()
+	cfg.GitHub.ScopeURL = "https://github.com/example"
+	cfg.GitHub.AppID, cfg.GitHub.InstallationID = 1, 2
+	cfg.Runner.Execute = true
+	cfg.VM.Backend, cfg.VM.Image, cfg.VM.Arch = "tart", "macos", "arm64"
+	cfg.VM.ImageRef = "ghcr.io/example/macos@sha256:" + strings.Repeat("a", 64)
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	cfg.VM.ImageRef = "ghcr.io/example/macos:latest"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("accepted a mutable tag")
+	}
+}
+
+func TestMacDefaultsObserveWithPinnedTartImage(t *testing.T) {
+	cfg := MacDefaults()
+	cfg.GitHub.ScopeURL = "https://github.com/owner/repo"
+	cfg.GitHub.AppID, cfg.GitHub.InstallationID = 1, 2
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Runner.Execute || cfg.Runner.MaxConcurrent != 1 || cfg.VM.Backend != "tart" || cfg.VM.Arch != "arm64" || cfg.VM.ImageRef == "" {
+		t.Fatalf("unexpected macOS defaults: runner=%+v vm=%+v", cfg.Runner, cfg.VM)
+	}
+}
+
+func TestImageAutoUpdateConfigurationRoundTrip(t *testing.T) {
+	for _, value := range []*bool{nil, new(bool), func() *bool { yes := true; return &yes }()} {
+		cfg := MacDefaults()
+		cfg.GitHub.ScopeURL = "https://github.com/example/repo"
+		cfg.GitHub.AppID, cfg.GitHub.InstallationID = 1, 2
+		cfg.Runner.ImageAutoUpdate = value
+		encoded, err := yaml.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, encoded, 0600); err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := decoded.Runner.ImageAutoUpdate
+		if (value == nil) != (got == nil) || value != nil && *value != *got {
+			t.Fatalf("update selection did not round-trip: %s", encoded)
+		}
 	}
 }

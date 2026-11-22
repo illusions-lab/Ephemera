@@ -12,6 +12,8 @@ SupplementaryGroups=kvm
 UMask=0077
 KillMode=mixed
 ExecStart=/usr/local/bin/ephemerad --create --status-socket=/run/ephemera/status.sock
+StandardOutput=journal
+StandardError=journal
 RuntimeDirectory=ephemera
 RuntimeDirectoryMode=0755
 LoadCredential=github-app-key:/etc/ephemera/credentials/github-app.pem

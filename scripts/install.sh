@@ -19,7 +19,9 @@ while (($#)); do
 done
 [[ -z "$version" || -z "$bundle" ]] || die 'choose either --version or --bundle'
 [[ "$mode" == install || ( -z "$version" && -z "$bundle" && -z "$config" && -z "$key" && "$non_interactive" == false ) ]] || die 'invalid update options'
-[[ -z "$config$key" ]] || { "$non_interactive" && [[ -n "$config" && -n "$key" ]] || die 'provide --non-interactive, --config and --github-app-key together'; }
+if [[ -n "$config$key" ]] && { ! "$non_interactive" || [[ -z "$config" || -z "$key" ]]; }; then
+  die 'provide --non-interactive, --config and --github-app-key together'
+fi
 root=/opt/ephemera
 current=$root/current
 staged=$root/staged
@@ -30,10 +32,16 @@ releases=https://github.com/illusions-lab/Ephemera/releases
 fetch=(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --retry 2)
 online=true
 [[ -z "$bundle" ]] || online=false
+case "$(uname -m)" in
+  x86_64) arch=amd64 ;;
+  aarch64) arch=arm64 ;;
+  *) die 'only Linux amd64 and arm64 are supported' ;;
+esac
 install_cloudflared() {
   local version=2026.11.1
   local digest=97bb3b02d23a5980fc9c15a1a270e692da1923f103f920d5b16d4931d5ab55e7
-  local asset=cloudflared-linux-amd64
+  local asset=cloudflared-linux-$arch
+  if [[ "$arch" == arm64 ]]; then digest=b155cec3e48e489cfb8e5c602769fb8c771083018d8881d68b4d18a791567c5a; fi
   if [[ -x "$root/tools/cloudflared" ]] || command -v cloudflared >/dev/null; then return 0; fi
   printf 'Preparing cloudflared for browser setup...\n'
   "${fetch[@]}" --retry 0 --connect-timeout 8 --max-time 60 -o "$temp/$asset" \
@@ -109,7 +117,6 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 if [[ "$mode" != apply ]]; then
   if [[ -z "$bundle" ]]; then
-    [[ "$(uname -m)" == x86_64 ]] || die 'only amd64 is supported'
     [[ -n "$version" ]] || version=$(latest_version)
     [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die 'invalid release tag'
     if [[ "$mode" == stage && -x "$current/ephemera" ]]; then
@@ -121,11 +128,11 @@ if [[ "$mode" != apply ]]; then
     if [[ "$mode" == stage && -x "$staged/ephemera" && "$("$staged/ephemera" version | cut -d' ' -f1)" == "$version" ]]; then
       printf 'Already staged: %s\n' "$version"; exit 0
     fi
-    archive=ephemera_linux_amd64.tar.gz
+    archive=ephemera_linux_$arch.tar.gz
     "${fetch[@]}" -o "$temp/checksums.txt" "$releases/download/$version/checksums.txt"
-    "${fetch[@]}" -o "$temp/$archive" "$releases/download/$version/$archive"
     expected=$(awk -v asset="$archive" '$2 == asset || $2 == "*" asset { print $1 }' "$temp/checksums.txt")
-    [[ "$expected" =~ ^[[:xdigit:]]{64}$ ]] || die 'invalid archive checksum'
+    [[ "$expected" =~ ^[[:xdigit:]]{64}$ ]] || die "release $version has no valid checksum for $archive"
+    "${fetch[@]}" -o "$temp/$archive" "$releases/download/$version/$archive"
     (cd "$temp" && printf '%s  %s\n' "$expected" "$archive" | sha256sum -c -)
     mkdir "$temp/bundle"
     for file in ephemera ephemerad ephemera.service install.sh; do tar -xOzf "$temp/$archive" "$file" > "$temp/bundle/$file" || die "missing $file"; done

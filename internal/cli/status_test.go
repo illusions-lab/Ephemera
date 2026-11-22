@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -13,24 +14,29 @@ import (
 	runtimeStatus "github.com/illusions-lab/Ephemera/internal/status"
 )
 
-func TestStatusFallsBackToSystemd(t *testing.T) {
+func TestStatusReportsHostSupervisorWhenSocketOffline(t *testing.T) {
 	dir, err := os.MkdirTemp("", "ephe-status-")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	script := "#!/bin/sh\nprintf '%s\\n' LoadState=loaded ActiveState=activating SubState=auto-restart Result=exit-code 'StatusText=Degraded during Connecting'\n"
-	if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(script), 0700); err != nil {
+	program, state, substate, detail := "systemctl", "activating", "auto-restart", "Degraded during Connecting"
+	if runtime.GOOS == "darwin" {
+		program, state, substate, detail = "launchctl", "active", "running", "(running)"
+		script = "#!/bin/sh\nprintf '%s\n' 'state = running'\n"
+	}
+	if err := os.WriteFile(filepath.Join(dir, program), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
 	report := collectStatus(t.Context(), filepath.Join(dir, "offline.sock"))
-	if report.Daemon != nil || report.Service.State != "activating" || report.Service.Substate != "auto-restart" {
+	if report.Daemon != nil || report.Service.State != state || report.Service.Substate != substate {
 		t.Fatalf("unexpected status report: %+v", report)
 	}
 	var output bytes.Buffer
 	printStatus(&output, report)
-	for _, expected := range []string{"status socket is offline", "Degraded during Connecting"} {
+	for _, expected := range []string{"status socket is offline", detail} {
 		if !strings.Contains(output.String(), expected) {
 			t.Fatalf("expected %q in status output: %s", expected, &output)
 		}

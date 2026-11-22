@@ -16,9 +16,13 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/illusions-lab/Ephemera/internal/backend"
 	"github.com/illusions-lab/Ephemera/internal/config"
-	"github.com/illusions-lab/Ephemera/internal/image"
+	"github.com/illusions-lab/Ephemera/internal/host"
+	"github.com/illusions-lab/Ephemera/internal/macos"
 	"github.com/illusions-lab/Ephemera/internal/orders"
+	"github.com/illusions-lab/Ephemera/internal/qemuplatform"
+	"github.com/illusions-lab/Ephemera/internal/status"
 	"golang.org/x/sys/unix"
 )
 
@@ -30,8 +34,8 @@ type doctorChecks struct {
 	loadConfig    func(string) (config.Config, error)
 	readKey       func(string) ([]byte, error)
 	probeScaleSet func(context.Context, orders.Config) (bool, error)
-	checkImage    func(context.Context, string, image.Config) (image.Image, error)
-	linuxAMD64    bool
+	checkImage    func(context.Context, config.Config, string, string) (string, error)
+	hostArch      string
 	lookPath      func(string) (string, error)
 	checkKVM      func() error
 	diskSpace     func(string) (uint64, string, error)
@@ -39,9 +43,9 @@ type doctorChecks struct {
 
 func runDoctor(args []string) error {
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	path := flags.String("config", filepath.Join(config.Dir, "config.yaml"), "configuration file")
-	keyPath := flags.String("github-app-key", filepath.Join(config.Dir, "credentials", "github-app.pem"), "GitHub App PEM file")
-	cacheDir := flags.String("image-cache", image.DefaultCache, "runner image cache directory")
+	path := flags.String("config", host.ConfigPath(), "configuration file")
+	keyPath := flags.String("github-app-key", host.KeyPath(), "GitHub App PEM file")
+	cacheDir := flags.String("image-cache", host.ImageCache(), "runner image cache directory")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -54,9 +58,12 @@ func runDoctor(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if runtime.GOOS == "darwin" {
+		return diagnoseMac(ctx, *path, *keyPath)
+	}
 	return diagnose(ctx, os.Stdout, doctorPaths{config: *path, key: *keyPath, cache: *cacheDir}, doctorChecks{
 		loadConfig: config.Load, readKey: config.ReadKey, probeScaleSet: orders.ProbeScaleSet,
-		checkImage: image.CheckCached, linuxAMD64: runtime.GOOS == "linux" && runtime.GOARCH == "amd64",
+		checkImage: backend.CheckImage, hostArch: linuxHostArch(),
 		lookPath: exec.LookPath, checkKVM: checkKVM, diskSpace: availableDisk,
 	})
 }
@@ -76,6 +83,9 @@ func diagnose(ctx context.Context, output io.Writer, paths doctorPaths, checks d
 	cfg, configErr := checks.loadConfig(paths.config)
 	if configErr == nil {
 		report("OK", "Configuration", paths.config)
+		if checks.hostArch != "" && cfg.VM.Arch != "" && cfg.VM.Arch != checks.hostArch {
+			report("FAIL", "Architecture", fmt.Sprintf("Configured guest %s requires a matching host (current %s).", cfg.VM.Arch, checks.hostArch))
+		}
 	} else {
 		report("FAIL", "Configuration", fmt.Sprintf("%v. Review the file or run sudo ephe setup.", configErr))
 	}
@@ -116,16 +126,12 @@ func diagnose(ctx context.Context, output io.Writer, paths doctorPaths, checks d
 	if configErr != nil {
 		report("SKIP", "Runner image cache", "A valid configuration is required.")
 	} else {
-		imageCfg, err := cfg.ImageConfig()
-		var cached image.Image
-		if err == nil {
-			cacheCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-			cached, err = checks.checkImage(cacheCtx, paths.cache, imageCfg)
-			cancel()
-		}
+		cacheCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		cached, err := checks.checkImage(cacheCtx, cfg, host.StateDir(), paths.cache)
+		cancel()
 		switch {
 		case err == nil:
-			report("OK", "Runner image cache", cached.Path)
+			report("OK", "Runner image cache", cached)
 		case errors.Is(err, os.ErrPermission):
 			report("FAIL", "Runner image cache", "Cannot read the image cache. Run sudo ephe doctor.")
 		default:
@@ -133,12 +139,13 @@ func diagnose(ctx context.Context, output io.Writer, paths doctorPaths, checks d
 		}
 	}
 
-	if !checks.linuxAMD64 {
-		report("FAIL", "QEMU host", "The Ubuntu runner image requires Linux amd64.")
+	platform, platformErr := qemuplatform.ForArch(checks.hostArch)
+	if platformErr != nil {
+		report("FAIL", "QEMU host", "The Ubuntu runner image requires Linux amd64 or arm64.")
 		report("SKIP", "KVM", "Run this check on the Linux runner host.")
 	} else {
 		var missing []string
-		for _, binary := range []string{"qemu-system-x86_64", "qemu-img"} {
+		for _, binary := range []string{platform.Binary, "qemu-img"} {
 			if _, err := checks.lookPath(binary); err != nil {
 				missing = append(missing, binary)
 			}
@@ -146,7 +153,10 @@ func diagnose(ctx context.Context, output io.Writer, paths doctorPaths, checks d
 		if len(missing) > 0 {
 			report("FAIL", "QEMU", "Missing: "+strings.Join(missing, ", ")+". Install the QEMU packages on the host.")
 		} else {
-			report("OK", "QEMU", "qemu-system-x86_64 and qemu-img are available.")
+			report("OK", "QEMU", platform.Binary+" and qemu-img are available.")
+		}
+		if err := platform.CheckFirmware(); err != nil {
+			report("FAIL", "QEMU firmware", err.Error())
 		}
 		if err := checks.checkKVM(); err != nil {
 			report("WARN", "KVM", fmt.Sprintf("%v. QEMU image verification can fall back to software emulation.", err))
@@ -197,4 +207,44 @@ func availableDisk(path string) (uint64, string, error) {
 		}
 		dir = parent
 	}
+}
+
+func linuxHostArch() string {
+	if runtime.GOOS == "linux" {
+		return runtime.GOARCH
+	}
+	return ""
+}
+
+func diagnoseMac(ctx context.Context, configPath, keyPath string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	if cfg.VM.Backend != "tart" {
+		return errors.New("macOS runner configuration must use Tart")
+	}
+	if _, err := config.ReadKey(keyPath); err != nil {
+		return fmt.Errorf("read GitHub App key: %w", err)
+	}
+	fmt.Println("Configuration and GitHub App key are readable.")
+	ref, err := backend.CheckImage(ctx, cfg, host.StateDir(), host.ImageCache())
+	if err != nil {
+		return fmt.Errorf("check runner image cache: %w", err)
+	}
+	fmt.Printf("Tart %s image cache contains %s.\n", macos.TartVersion, ref)
+	free, path, err := availableDisk(macos.Root())
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%.1f GiB available on %s.\n", float64(free)/(1<<30), path)
+	current, err := status.Read(ctx, host.StatusSocket())
+	if err != nil {
+		return fmt.Errorf("read LaunchAgent status: %w", err)
+	}
+	fmt.Printf("Ephemera %s, GitHub %s, intake %s.\n", current.Phase, current.GitHub, current.Intake)
+	if current.GitHub != "connected" {
+		return errors.New("Ephemera is not connected to GitHub")
+	}
+	return nil
 }

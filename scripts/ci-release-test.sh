@@ -15,7 +15,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-sudo env LIBGUESTFS_BACKEND=direct "$bundle/ephemera" image prepare --config configs/ephemera.example.yaml
+arch=$(dpkg --print-architecture)
+sed -e "s/arch: amd64/arch: $arch/" -e "s/ephemera-ubuntu-amd64/ephemera-ubuntu-$arch/" configs/ephemera.example.yaml > "$work/config.yaml"
+sudo env LIBGUESTFS_BACKEND=direct EPHEMERA_OFFLINE_BOOT_DEBUG=1 "$bundle/ephemera" image prepare --config "$work/config.yaml"
 openssl genrsa -traditional -out "$work/key.pem" 2048
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=github.com \
   -addext 'subjectAltName=DNS:github.com,DNS:api.github.com' \
@@ -36,7 +38,7 @@ for _ in {1..20}; do
   sleep 1
 done
 sudo bash "$bundle/install.sh" --bundle "$bundle" --non-interactive \
-  --config configs/ephemera.example.yaml --github-app-key "$work/key.pem"
+  --config "$work/config.yaml" --github-app-key "$work/key.pem"
 systemctl is-active --quiet ephemera.service
 test "$(systemctl show -p StatusText --value ephemera.service)" = Healthy
 sudo systemctl stop ephemera.service

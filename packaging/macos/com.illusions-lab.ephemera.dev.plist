@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.illusions-lab.ephemera.dev</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/ABSOLUTE/PATH/bin/ephemerad</string>
+        <string>--config</string>
+        <string>/ABSOLUTE/PRIVATE/STATE/config.yaml</string>
+        <string>--github-app-key</string>
+        <string>/ABSOLUTE/PRIVATE/STATE/github-app.pem</string>
+        <string>--state-dir</string>
+        <string>/ABSOLUTE/PRIVATE/STATE</string>
+        <string>--status-socket</string>
+        <string>/ABSOLUTE/PRIVATE/STATE/status.sock</string>
+        <string>--log-file</string>
+        <string>/ABSOLUTE/HOME/Library/Logs/Ephemera/daemon-dev.log</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/ABSOLUTE/PATH/tart.app/Contents/MacOS:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>Umask</key>
+    <integer>63</integer>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ExitTimeOut</key>
+    <integer>60</integer>
+</dict>
+</plist>

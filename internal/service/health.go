@@ -1,32 +1,14 @@
 package service
 
 import (
-	"fmt"
 	"log/slog"
-	"net"
-	"os"
+
+	"github.com/illusions-lab/Ephemera/internal/host"
 )
 
 func reportHealth(logger *slog.Logger, state, failedPhase string) error {
-	if socket := os.Getenv("NOTIFY_SOCKET"); socket != "" {
-		conn, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: socket, Net: "unixgram"})
-		if err != nil {
-			return fmt.Errorf("notify systemd: %w", err)
-		}
-		defer conn.Close()
-		message := "STATUS=" + state
-		if failedPhase != "" {
-			message += " during " + failedPhase
-		}
-		switch state {
-		case "Healthy":
-			message += "\nREADY=1"
-		case "Stopping":
-			message += "\nSTOPPING=1"
-		}
-		if _, err := conn.Write([]byte(message)); err != nil {
-			return fmt.Errorf("notify systemd: %w", err)
-		}
+	if err := host.NotifyHealth(state, failedPhase); err != nil {
+		return err
 	}
 	logger.Info("Service health", "state", state)
 	return nil

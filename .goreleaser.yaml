@@ -6,14 +6,28 @@ builds:
     binary: ephemera
     env: [CGO_ENABLED=0]
     goos: [linux]
-    goarch: [amd64]
+    goarch: [amd64, arm64]
     ldflags: ['-s -w -X github.com/illusions-lab/Ephemera/internal/version.Version={{ .Tag }} -X github.com/illusions-lab/Ephemera/internal/version.Commit={{ .FullCommit }}']
   - id: ephemerad
     main: ./cmd/ephemerad
     binary: ephemerad
     env: [CGO_ENABLED=0]
     goos: [linux]
-    goarch: [amd64]
+    goarch: [amd64, arm64]
+    ldflags: ['-s -w -X github.com/illusions-lab/Ephemera/internal/version.Version={{ .Tag }} -X github.com/illusions-lab/Ephemera/internal/version.Commit={{ .FullCommit }}']
+  - id: ephemera-darwin
+    main: ./cmd/ephemera
+    binary: ephemera
+    env: [CGO_ENABLED=0]
+    goos: [darwin]
+    goarch: [arm64]
+    ldflags: ['-s -w -X github.com/illusions-lab/Ephemera/internal/version.Version={{ .Tag }} -X github.com/illusions-lab/Ephemera/internal/version.Commit={{ .FullCommit }}']
+  - id: ephemerad-darwin
+    main: ./cmd/ephemerad
+    binary: ephemerad
+    env: [CGO_ENABLED=0]
+    goos: [darwin]
+    goarch: [arm64]
     ldflags: ['-s -w -X github.com/illusions-lab/Ephemera/internal/version.Version={{ .Tag }} -X github.com/illusions-lab/Ephemera/internal/version.Commit={{ .FullCommit }}']
 archives:
   - id: bundle
@@ -25,11 +39,23 @@ archives:
         dst: ephemera.service
       - src: scripts/install.sh
         dst: install.sh
+  - id: darwin-bundle
+    ids: [ephemera-darwin, ephemerad-darwin]
+    name_template: 'ephemera_{{ .Os }}_{{ .Arch }}'
+    formats: [tar.gz]
+    files:
+      - src: internal/macos/tart-manifest.tsv
+        dst: tart-manifest.tsv
+      - src: packaging/macos/server-config.sh
+        dst: server-config.sh
+      - src: scripts/install-macos.sh
+        dst: install-macos.sh
 checksum:
   name_template: checksums.txt
 release:
   draft: true
   extra_files:
     - glob: scripts/install.sh
+    - glob: scripts/install-macos.sh
 changelog:
   disable: true

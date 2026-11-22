@@ -8,24 +8,16 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
+	"github.com/illusions-lab/Ephemera/internal/host"
 	runtimeStatus "github.com/illusions-lab/Ephemera/internal/status"
 )
 
-type serviceStatus struct {
-	State    string `json:"state"`
-	Substate string `json:"substate,omitempty"`
-	Result   string `json:"result,omitempty"`
-	Message  string `json:"message,omitempty"`
-}
-
 type statusReport struct {
-	Service           serviceStatus           `json:"service"`
+	Service           host.ServiceStatus      `json:"service"`
 	Daemon            *runtimeStatus.Snapshot `json:"daemon"`
 	DaemonUnavailable string                  `json:"daemon_unavailable,omitempty"`
 }
@@ -34,7 +26,7 @@ func runStatus(args []string) error {
 	flags := flag.NewFlagSet("status", flag.ContinueOnError)
 	jsonOutput := flags.Bool("json", false, "write JSON, one object per update in watch mode")
 	watch := flags.Bool("watch", false, "refresh every two seconds")
-	socket := flags.String("socket", runtimeStatus.SocketPath, "daemon status socket")
+	socket := flags.String("socket", host.StatusSocket(), "daemon status socket")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -93,7 +85,7 @@ func streamStatus(ctx context.Context, output io.Writer, jsonOutput bool, ticks 
 }
 
 func collectStatus(ctx context.Context, socket string) statusReport {
-	report := statusReport{Service: queryService(ctx)}
+	report := statusReport{Service: host.QueryService(ctx)}
 	snapshot, err := runtimeStatus.Read(ctx, socket)
 	switch {
 	case errors.Is(err, os.ErrNotExist), errors.Is(err, syscall.ECONNREFUSED):
@@ -106,34 +98,6 @@ func collectStatus(ctx context.Context, socket string) statusReport {
 		report.Daemon = &snapshot
 	}
 	return report
-}
-
-func queryService(ctx context.Context) serviceStatus {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	out, _ := exec.CommandContext(ctx, "systemctl", "show", "--no-pager",
-		"--property=LoadState,ActiveState,SubState,Result,StatusText", "ephemera.service").Output()
-	state := serviceStatus{State: "unknown"}
-	for _, line := range strings.Split(string(out), "\n") {
-		key, value, _ := strings.Cut(line, "=")
-		switch key {
-		case "LoadState":
-			if value == "not-found" {
-				return serviceStatus{State: "not-installed"}
-			}
-		case "ActiveState":
-			if value != "" {
-				state.State = value
-			}
-		case "SubState":
-			state.Substate = value
-		case "Result":
-			state.Result = value
-		case "StatusText":
-			state.Message = value
-		}
-	}
-	return state
 }
 
 func printStatus(w io.Writer, report statusReport) {
@@ -164,6 +128,18 @@ func printStatus(w io.Writer, report statusReport) {
 		fmt.Fprintf(w, "%-13s %q\n", "Scale Set", s.ScaleSet)
 	}
 	fmt.Fprintf(w, "%-13s %s\n", "Job intake", s.Intake)
+	if update := s.ImageUpdate; update != nil {
+		fmt.Fprintf(w, "%-13s %s (automatic: %t)\n", "Runner image", update.Current, update.Enabled)
+		if update.Previous != "" {
+			fmt.Fprintf(w, "%-13s %s\n", "Previous image", update.Previous)
+		}
+		if !update.LastCheck.IsZero() {
+			fmt.Fprintf(w, "%-13s %s\n", "Image check", update.LastCheck.Format(time.RFC3339))
+		}
+		if update.RolledBack {
+			fmt.Fprintf(w, "Runner image rolled back (%s)\n", update.RollbackReason)
+		}
+	}
 	if s.Backend != "" {
 		fmt.Fprintf(w, "%-13s %s\n", "VM backend", s.Backend)
 	}

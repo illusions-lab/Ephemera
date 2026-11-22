@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/illusions-lab/Ephemera/internal/config"
-	"github.com/illusions-lab/Ephemera/internal/image"
 	"github.com/illusions-lab/Ephemera/internal/orders"
 )
 
@@ -72,8 +71,8 @@ func TestDoctorChecks(t *testing.T) {
 		{
 			name: "image missing", failed: true,
 			change: func(c *doctorChecks) {
-				c.checkImage = func(context.Context, string, image.Config) (image.Image, error) {
-					return image.Image{}, os.ErrNotExist
+				c.checkImage = func(context.Context, config.Config, string, string) (string, error) {
+					return "", os.ErrNotExist
 				}
 			},
 			want: []string{"[FAIL] Runner image cache", "run sudo ephe image prepare"},
@@ -81,8 +80,8 @@ func TestDoctorChecks(t *testing.T) {
 		{
 			name: "image corrupted", failed: true,
 			change: func(c *doctorChecks) {
-				c.checkImage = func(context.Context, string, image.Config) (image.Image, error) {
-					return image.Image{}, errors.New("cached image SHA-256 mismatch")
+				c.checkImage = func(context.Context, config.Config, string, string) (string, error) {
+					return "", errors.New("cached image SHA-256 mismatch")
 				}
 			},
 			want: []string{"[FAIL] Runner image cache", "cached image SHA-256 mismatch"},
@@ -116,6 +115,7 @@ func TestDoctorChecks(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := config.Defaults()
+			cfg.VM.Arch = "amd64"
 			cfg.GitHub.ScopeURL = "https://github.com/example"
 			cfg.GitHub.AppID, cfg.GitHub.InstallationID = 12, 34
 			const key = "fixture private key"
@@ -132,13 +132,13 @@ func TestDoctorChecks(t *testing.T) {
 					}
 					return true, nil
 				},
-				checkImage: func(_ context.Context, path string, _ image.Config) (image.Image, error) {
-					return image.Image{Path: path + "/image.qcow2"}, nil
+				checkImage: func(_ context.Context, _ config.Config, _, path string) (string, error) {
+					return path + "/image.qcow2", nil
 				},
-				linuxAMD64: true,
-				lookPath:   func(name string) (string, error) { return name, nil },
-				checkKVM:   func() error { return nil },
-				diskSpace:  func(path string) (uint64, string, error) { return 16 << 30, path, nil },
+				hostArch:  "amd64",
+				lookPath:  func(name string) (string, error) { return name, nil },
+				checkKVM:  func() error { return nil },
+				diskSpace: func(path string) (uint64, string, error) { return 16 << 30, path, nil },
 			}
 			if test.change != nil {
 				test.change(&checks)

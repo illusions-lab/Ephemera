@@ -1,0 +1,106 @@
+name: Runner image channel
+on:
+  schedule:
+    - cron: '23 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: runner-image-channel
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: image-candidates
+    outputs:
+      changed: ${{ steps.discover.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require Ubuntu cloud image signing keyring
+        run: test -r /usr/share/keyrings/ubuntu-cloudimage-keyring.gpg
+      - name: Discover verified upstream inputs
+        id: discover
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_MIN_VERSION: ${{ vars.IMAGE_MIN_VERSION }}
+        run: |
+          [[ "$IMAGE_MIN_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          python3 scripts/image-channel.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-channel-candidate
+          path: stable.json
+          if-no-files-found: error
+
+  acceptance:
+    needs: discover
+    if: needs.discover.outputs.changed == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: linux, arch: amd64, host: ephemera-image-linux-amd64 }
+          - { os: linux, arch: arm64, host: ephemera-image-linux-arm64 }
+          - { os: macos, arch: arm64, host: ephemera-image-macos-arm64 }
+    runs-on: [self-hosted, '${{ matrix.host }}']
+    environment: image-acceptance
+    timeout-minutes: 125
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v4
+        with:
+          name: image-channel-candidate
+      - name: Run real Scale Set jobs before and after switching
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_MIN_VERSION: ${{ vars.IMAGE_MIN_VERSION }}
+          GUEST_OS: ${{ matrix.os }}
+          GUEST_ARCH: ${{ matrix.arch }}
+        run: bash scripts/ci-image-channel-test.sh stable.json
+
+  publish:
+    needs: [discover, acceptance]
+    if: needs.discover.outputs.changed == 'true' && needs.acceptance.result == 'success'
+    environment: image-publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: image-channel-candidate
+          path: candidate
+      - name: Publish accepted stable manifest
+        run: |
+          set -euo pipefail
+          source_dir="$PWD/candidate"
+          ref=refs/heads/image-channel
+          if git ls-remote --exit-code origin "$ref"; then
+            git fetch origin "$ref"
+            git worktree add --detach "$RUNNER_TEMP/image-channel" FETCH_HEAD
+          else
+            status=$?
+            test "$status" = 2
+            git worktree add --detach "$RUNNER_TEMP/image-channel" HEAD
+            git -C "$RUNNER_TEMP/image-channel" checkout --orphan image-channel
+            git -C "$RUNNER_TEMP/image-channel" rm -rf .
+          fi
+          cd "$RUNNER_TEMP/image-channel"
+          cp "$source_dir/stable.json" stable.json
+          git add stable.json
+          git -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com commit -m "Publish verified runner image manifest"
+          git push origin "HEAD:$ref"

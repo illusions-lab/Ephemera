@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -14,24 +13,15 @@ import (
 	"github.com/illusions-lab/Ephemera/internal/vm"
 )
 
-const DefaultStateDir = "/var/lib/ephemera/instances"
-
 type listenFunc func(context.Context, orders.Config, *slog.Logger, func(context.Context, orders.Update) error) error
 
-func execute(ctx context.Context, cfg config.Config, github orders.Config, imagePath string, store instanceStore,
-	backend vm.Backend, logger *slog.Logger, listen listenFunc,
-	report func(bool, bool, bool, orders.Update, status.Instances) error,
+func execute(ctx context.Context, cfg config.Config, github orders.Config, namespace string, store instanceStore,
+	backend vm.Backend, runners registry, logger *slog.Logger, listen listenFunc,
+	prepare func() (string, func() error, error),
+	report func(bool, bool, bool, orders.Update, status.Instances) error, updates ...*imageUpdates,
 ) error {
-	imagePath, err := filepath.Abs(imagePath)
-	if err != nil {
-		return err
-	}
-	runners, err := orders.NewRunners(github)
-	if err != nil {
-		return err
-	}
 	template := vm.Instance{
-		Backend: cfg.VM.Backend, Image: imagePath,
+		Backend: cfg.VM.Backend, Namespace: namespace,
 		Scope: github.ScopeURL, ScaleSet: github.ScaleSetName,
 	}
 	restored, err := store.load()
@@ -42,9 +32,12 @@ func execute(ctx context.Context, cfg config.Config, github orders.Config, image
 		return err
 	}
 	r := &reconciler{
-		backend: backend, registry: runners, store: store, template: template, checkImage: github.CheckImage,
+		backend: backend, registry: runners, store: store, template: template,
 		limit: github.MaxConcurrent, startupTimeout: cfg.Runner.StartupTimeout, idleTimeout: cfg.Runner.IdleTimeout,
 		logger: logger, events: make(chan runnerEvent), instances: make(map[string]*instanceState), report: report,
+	}
+	if len(updates) > 0 {
+		r.images = updates[0]
 	}
 	listenCtx, stop := context.WithCancel(ctx)
 	defer stop()
@@ -59,18 +52,50 @@ func execute(ctx context.Context, cfg config.Config, github orders.Config, image
 		capacity.Store(0)
 		_ = r.submit(listenCtx, runnerEvent{kind: disconnected})
 	}
-	recovered := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		select {
-		case <-recovered:
-			listenForExecution(listenCtx, github, logger, listen, r)
-		case <-listenCtx.Done():
+	var done, updateDone chan struct{}
+	err = r.run(ctx, restored, func() error {
+		imageID, checkImage, err := prepare()
+		active := preparedImage{id: imageID, check: checkImage}
+		if r.images != nil {
+			active = r.images.recover(ctx, active)
 		}
-	}()
-	err = r.run(ctx, restored, recovered, func(free int) { capacity.Store(int64(free)) })
+		if err != nil && active.recipe == nil {
+			return err
+		}
+		if err != nil {
+			logger.Warn("Use recovered runner image after bundled image preparation failed", "error", err)
+		}
+		r.setImage(active)
+		github.CheckImage = func() error {
+			active := r.active.Load()
+			if active.check != nil {
+				err := active.check()
+				if err != nil && active.recipe != nil {
+					_ = r.send(listenCtx, runnerEvent{kind: imageUnavailable, image: *active, stage: "check base image", err: err})
+				}
+				return err
+			}
+			return nil
+		}
+		if r.images != nil && r.images.enabled {
+			updateDone = make(chan struct{})
+			initial := r.images.state
+			go func() { defer close(updateDone); r.images.watch(listenCtx, r, initial) }()
+		}
+		done = make(chan struct{})
+		go func() {
+			defer close(done)
+			listenForExecution(listenCtx, github, logger, listen, r)
+		}()
+		return nil
+	}, func(free int) { capacity.Store(int64(free)) })
+	if done == nil {
+		return err
+	}
 	stop()
+	if updateDone != nil {
+		<-updateDone
+	}
 	timer := time.NewTimer(4 * time.Second)
 	defer timer.Stop()
 	select {

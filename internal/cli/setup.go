@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/charmbracelet/x/term"
 	"github.com/illusions-lab/Ephemera/internal/cli/setup"
@@ -61,6 +62,9 @@ func runSetup(args []string) error {
 	if !*nonInteractive && (*source != "" || *keyPath != "") {
 		return errors.New("--config and --github-app-key require --non-interactive")
 	}
+	if runtime.GOOS == "darwin" {
+		return runMacSetup(*nonInteractive, *resume, *source, *keyPath, *appName, *existingApp)
+	}
 	if os.Geteuid() != 0 {
 		return errors.New("run setup with sudo to write the system configuration")
 	}
@@ -84,6 +88,10 @@ func runSetup(args []string) error {
 }
 
 func setupFromFiles(dir, source, keyPath string, resume bool) error {
+	return setupFromValidatedFiles(dir, source, keyPath, resume, nil)
+}
+
+func setupFromValidatedFiles(dir, source, keyPath string, resume bool, validate func(config.Config, []byte) error) error {
 	destination := filepath.Join(dir, "config.yaml")
 	if !resume {
 		if _, err := os.Lstat(destination); err == nil {
@@ -105,6 +113,11 @@ func setupFromFiles(dir, source, keyPath string, resume bool) error {
 		return err
 	}
 	if !resume {
+		if validate != nil {
+			if err := validate(cfg, key); err != nil {
+				return err
+			}
+		}
 		return config.WriteSetup(dir, data, key)
 	}
 	saved, err := config.Load(destination)

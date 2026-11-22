@@ -8,17 +8,17 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
+	"github.com/illusions-lab/Ephemera/internal/backend"
 	"github.com/illusions-lab/Ephemera/internal/config"
-	"github.com/illusions-lab/Ephemera/internal/image"
+	"github.com/illusions-lab/Ephemera/internal/host"
 )
 
 func prepareImage(args []string) error {
 	flags := flag.NewFlagSet("image prepare", flag.ContinueOnError)
-	path := flags.String("config", filepath.Join(config.Dir, "config.yaml"), "configuration file")
-	cacheDir := flags.String("image-cache", image.DefaultCache, "image cache directory")
+	path := flags.String("config", host.ConfigPath(), "configuration file")
+	cacheDir := flags.String("image-cache", host.ImageCache(), "image cache directory")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -35,14 +35,10 @@ func prepareImage(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	imageCfg, err := cfg.ImageConfig()
+	prepared, err := backend.PrepareImage(ctx, cfg, host.StateDir(), *cacheDir, logger, os.Stderr)
 	if err != nil {
 		return err
 	}
-	prepared, err := image.Prepare(ctx, *cacheDir, imageCfg, logger)
-	if err != nil {
-		return err
-	}
-	fmt.Println(prepared.Path)
+	fmt.Println(prepared)
 	return nil
 }

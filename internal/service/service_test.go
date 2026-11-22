@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,51 @@ func TestReadinessAndCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	opts := Options{ConfigPath: "../../configs/ephemera.example.yaml", KeyPath: keyPath, CacheDir: dir}
+	t.Run("Tart observation does not provision an image", func(t *testing.T) {
+		t.Setenv("NOTIFY_SOCKET", "")
+		config, err := os.ReadFile("../../packaging/macos/config.dev.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := strings.NewReplacer("app_id: 0", "app_id: 1", "installation_id: 0", "installation_id: 2", "execute: true", "execute: false").Replace(string(config))
+		opts := opts
+		opts.ConfigPath = filepath.Join(dir, "tart.yaml")
+		stateDir, err := os.MkdirTemp("", "ephe-tart-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(stateDir) })
+		opts.StateDir, opts.StatusSocket = stateDir, filepath.Join(stateDir, "status.sock")
+		if runtime.GOOS == "darwin" {
+			stale, err := net.ListenUnix("unix", &net.UnixAddr{Name: opts.StatusSocket, Net: "unix"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stale.SetUnlinkOnClose(false)
+			if err := stale.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(opts.ConfigPath, []byte(text), 0600); err != nil {
+			t.Fatal(err)
+		}
+		err = run(t.Context(), opts, slog.New(slog.DiscardHandler),
+			func(context.Context, string, image.Config, *slog.Logger) (string, func() error, error) {
+				t.Fatal("Tart observation must not prepare a QEMU image")
+				return "", nil, nil
+			}, func(ctx context.Context, cfg orders.Config, _ *slog.Logger, update func(context.Context, orders.Update) error) error {
+				if cfg.CheckImage != nil {
+					t.Fatal("Tart observation must not pull an image")
+				}
+				if _, err := status.Read(ctx, opts.StatusSocket); err != nil {
+					t.Fatalf("status socket unavailable: %v", err)
+				}
+				return update(ctx, orders.Update{})
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
 	t.Run("image failure", func(t *testing.T) {
 		t.Setenv("NOTIFY_SOCKET", "")
 		var logs bytes.Buffer
@@ -54,7 +100,7 @@ func TestReadinessAndCancellation(t *testing.T) {
 		}
 		defer os.RemoveAll(socketDir)
 		opts := opts
-		opts.StatusSocket = filepath.Join(socketDir, "status.sock")
+		opts.StateDir, opts.StatusSocket = socketDir, filepath.Join(socketDir, "status.sock")
 		addr := &net.UnixAddr{Name: filepath.Join(socketDir, "notify"), Net: "unixgram"}
 		conn, err := net.ListenUnixgram("unixgram", addr)
 		if err != nil {

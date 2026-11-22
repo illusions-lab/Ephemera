@@ -1,0 +1,455 @@
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"math/rand/v2"
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strconv"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/illusions-lab/Ephemera/internal/backend"
+	"github.com/illusions-lab/Ephemera/internal/config"
+	"github.com/illusions-lab/Ephemera/internal/imagechannel"
+	"github.com/illusions-lab/Ephemera/internal/status"
+	"github.com/illusions-lab/Ephemera/internal/version"
+	"github.com/illusions-lab/Ephemera/internal/vm"
+	"golang.org/x/sys/unix"
+)
+
+type preparedImage struct {
+	recipe *imagechannel.Recipe
+	id     string
+	check  func() error
+}
+
+type updateState struct {
+	Current, Previous *imagechannel.Recipe
+	Highest           uint64
+	Rejected          []imagechannel.Recipe
+	Failures          int
+	LastCheck         time.Time
+	RolledBack        bool
+	RollbackReason    string
+	Retired           []string
+}
+
+type imageUpdates struct {
+	channelFile        string
+	path, platform     string
+	enabled            bool
+	state              updateState
+	baseline, previous preparedImage
+	prepare            func(context.Context, imagechannel.Recipe, bool) (preparedImage, error)
+	logger             *slog.Logger
+	prune              func(context.Context, string) error
+	cleanupSmoke       func(context.Context) error
+}
+
+func newImageUpdates(cfg config.Config, root string, selection backend.Selection, logger *slog.Logger, build backend.ImageBuilder, channelFile string) *imageUpdates {
+	if cfg.VM.Backend == "tart" && cfg.VM.ImageRef != config.MacDefaults().VM.ImageRef {
+		return nil
+	}
+	if cfg.VM.Backend == "qemu" {
+		if cfg.VM.Image != "ubuntu" {
+			return nil
+		}
+		if _, custom := cfg.ImageSources[cfg.VM.Image][cfg.VM.Arch]; custom {
+			return nil
+		}
+	}
+	platform := runtime.GOOS + "/" + runtime.GOARCH
+	u := &imageUpdates{channelFile: channelFile, path: filepath.Join(root, "image-channel", "state.json"), platform: platform, logger: logger,
+		enabled: cfg.Runner.ImageAutoUpdate != nil && *cfg.Runner.ImageAutoUpdate}
+	managedCache := filepath.Join(root, "image-channel", "cache")
+	if selection.VM != nil && cfg.VM.Backend == "tart" {
+		tart := selection.VM.(*vm.Tart)
+		identity := uuid.NewSHA1(uuid.NameSpaceURL, []byte(root+"/image-channel/smoke")).String()
+		smokeInstance := vm.Instance{ID: identity, Resource: runnerName(identity), Backend: "tart", Namespace: selection.Namespace}
+		u.cleanupSmoke = func(ctx context.Context) error {
+			return errors.Join(tart.Stop(ctx, smokeInstance), tart.Delete(ctx, smokeInstance))
+		}
+		u.prune = tart.RemoveCachedImage
+	} else {
+		u.prune = func(_ context.Context, id string) error {
+			dir := filepath.Dir(id)
+			if filepath.Dir(dir) != managedCache || filepath.Base(id) != "image.qcow2" {
+				return errors.New("refusing to remove unmanaged image")
+			}
+			return os.RemoveAll(dir)
+		}
+	}
+	u.prepare = func(ctx context.Context, recipe imagechannel.Recipe, smoke bool) (preparedImage, error) {
+		if err := recipe.Validate(platform, version.Version); err != nil {
+			return preparedImage{}, err
+		}
+		if smoke {
+			spacePath := root
+			if recipe.Ubuntu != nil {
+				spacePath = managedCache
+			}
+			if spacePath == "" {
+				spacePath = "."
+			}
+			if err := ensureImageSpace(spacePath); err != nil {
+				return preparedImage{}, err
+			}
+		}
+		if recipe.Ubuntu != nil {
+			imageCfg, err := cfg.ImageConfig()
+			if err != nil {
+				return preparedImage{}, err
+			}
+			imageCfg.Source = *recipe.Ubuntu
+			id, check, err := build(ctx, managedCache, imageCfg, logger)
+			if err != nil {
+				return preparedImage{}, err
+			}
+			id, err = filepath.Abs(id)
+			if err != nil {
+				return preparedImage{}, err
+			}
+			return preparedImage{&recipe, id, check}, check()
+		}
+		tart := selection.VM.(*vm.Tart)
+		id := recipe.TartRef
+		if err := tart.CheckImage(ctx, id); err != nil {
+			if _, _, err := tart.ResolveImage(ctx, id, nil); err != nil {
+				return preparedImage{}, err
+			}
+		}
+		if smoke {
+			identity := uuid.NewSHA1(uuid.NameSpaceURL, []byte(root+"/image-channel/smoke")).String()
+			i := vm.Instance{ID: identity, Resource: runnerName(identity), Backend: "tart", Namespace: selection.Namespace,
+				Image: id, RunnerVersion: recipe.RunnerVersion, RunnerSHA256: recipe.RunnerSHA256}
+			if err := tart.ValidateCandidate(ctx, i); err != nil {
+				return preparedImage{recipe: &recipe, id: id}, err
+			}
+		}
+		return preparedImage{&recipe, id, func() error { return tart.CheckImage(context.Background(), id) }}, nil
+	}
+	return u
+}
+
+func (u *imageUpdates) recover(ctx context.Context, baseline preparedImage) preparedImage {
+	u.baseline, u.previous = baseline, baseline
+	if u.cleanupSmoke != nil {
+		cleanup, cancel := context.WithTimeout(ctx, 15*time.Second)
+		err := u.cleanupSmoke(cleanup)
+		cancel()
+		if err != nil {
+			u.logger.Warn("Recover image smoke VM", "error", err)
+		}
+	}
+	data, err := os.ReadFile(u.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return baseline
+	}
+	if err == nil {
+		err = json.Unmarshal(data, &u.state)
+	}
+	if err != nil {
+		u.state = updateState{}
+		u.logger.Warn("Read image update state", "error", err)
+		return baseline
+	}
+	if u.state.Current == nil {
+		return baseline
+	}
+	if u.state.Previous != nil {
+		previous, err := u.prepare(ctx, *u.state.Previous, false)
+		if err == nil {
+			u.previous = previous
+		} else {
+			u.logger.Warn("Recover previous runner image", "error", err)
+		}
+	}
+	active, err := u.prepare(ctx, *u.state.Current, false)
+	if err == nil {
+		return active
+	}
+	u.logger.Warn("Recover active runner image", "error", err)
+	if u.previous.id == "" {
+		return preparedImage{}
+	}
+	next := u.state
+	next.Current, next.Previous, next.Failures, next.RolledBack = u.previous.recipe, nil, 0, true
+	next.RollbackReason = "active image could not be recovered"
+	next.Rejected = append(next.Rejected, *u.state.Current)
+	if err := u.save(next); err != nil {
+		u.logger.Error("Persist recovered runner image", "error", err)
+	}
+	return u.previous
+}
+
+func (u *imageUpdates) save(next updateState) error {
+	data, err := json.Marshal(next)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(u.path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".state-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	_, writeErr := f.Write(data)
+	if err := errors.Join(writeErr, f.Sync(), f.Close()); err != nil {
+		return err
+	}
+	if err := os.Rename(f.Name(), u.path); err != nil {
+		return err
+	}
+	// The rename is the commit point. A directory sync failure cannot undo it.
+	u.state = next
+	directory, err := os.Open(dir)
+	if err == nil {
+		defer directory.Close()
+		err = directory.Sync()
+	}
+	if err != nil {
+		u.logger.Error("Sync image update directory", "error", err)
+	}
+	return nil
+}
+
+func (u *imageUpdates) watch(ctx context.Context, r *reconciler, start updateState) {
+	delay := time.Duration(rand.IntN(300)) * time.Second
+	failures := 0
+	if u.channelFile != "" {
+		delay = 0
+	}
+	for {
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		checked := time.Now()
+		manifest, err := u.fetch(ctx)
+		var candidate preparedImage
+		if err == nil {
+			recipe, ok := manifest.Images[u.platform]
+			if ok && recipe.Revision > start.Highest && !rejected(start, recipe) {
+				if err = recipe.Validate(u.platform, version.Version); err == nil {
+					work, cancel := context.WithTimeout(ctx, 55*time.Minute)
+					candidate, err = u.prepare(work, recipe, true)
+					cancel()
+				}
+			}
+		}
+		reply := make(chan updateState, 1)
+		if r.send(ctx, runnerEvent{kind: imageChecked, image: candidate, err: err, checked: checked, imageReply: reply}) != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case start = <-reply:
+		}
+		if err != nil {
+			failures++
+			delay = min(time.Hour, time.Minute<<min(failures-1, 6))
+		} else {
+			failures = 0
+			delay = 24*time.Hour + time.Duration(rand.IntN(900))*time.Second
+		}
+		if u.channelFile != "" {
+			delay = min(delay, 5*time.Second)
+		}
+	}
+}
+
+func (u *imageUpdates) fetch(ctx context.Context) (imagechannel.Manifest, error) {
+	if u.channelFile == "" {
+		return imagechannel.Fetch(ctx, imagechannel.URL)
+	}
+	f, err := os.Open(u.channelFile)
+	if err != nil {
+		return imagechannel.Manifest{}, err
+	}
+	defer f.Close()
+	return imagechannel.Decode(f)
+}
+
+func rejected(s updateState, candidate imagechannel.Recipe) bool {
+	for _, ignored := range s.Rejected {
+		if ignored.TartRef == candidate.TartRef && ignored.RunnerSHA256 == candidate.RunnerSHA256 &&
+			(ignored.Ubuntu == nil && candidate.Ubuntu == nil || ignored.Ubuntu != nil && candidate.Ubuntu != nil && *ignored.Ubuntu == *candidate.Ubuntu) {
+			return true
+		}
+	}
+	return false
+}
+
+func ensureImageSpace(path string) error {
+	for {
+		var fs unix.Statfs_t
+		err := unix.Statfs(path, &fs)
+		if errors.Is(err, os.ErrNotExist) && filepath.Dir(path) != path {
+			path = filepath.Dir(path)
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if uint64(fs.Bavail)*uint64(fs.Bsize) < 20<<30 {
+			return errors.New("runner image preparation requires 20 GiB free")
+		}
+		return nil
+	}
+}
+
+func (r *reconciler) setImage(p preparedImage) {
+	r.active.Store(&p)
+	r.template.Image, r.checkImage = p.id, p.check
+	r.template.ImageRevision, r.template.RunnerVersion, r.template.RunnerSHA256 = "", "", ""
+	if p.recipe != nil {
+		r.template.ImageRevision = strconv.FormatUint(p.recipe.Revision, 10)
+		r.template.RunnerVersion, r.template.RunnerSHA256 = p.recipe.RunnerVersion, p.recipe.RunnerSHA256
+	}
+}
+
+func (r *reconciler) retire(state *updateState, previous preparedImage) {
+	if previous.recipe != nil {
+		state.Retired = append(append([]string(nil), state.Retired...), previous.id)
+	}
+}
+
+func (r *reconciler) pruneImages() {
+	u := r.images
+	if u.prune == nil || len(u.state.Retired) == 0 {
+		return
+	}
+	next := u.state
+	next.Retired = nil
+	for _, id := range u.state.Retired {
+		keep := id == r.template.Image || id == u.previous.id || id == u.baseline.id
+		for _, instance := range r.instances {
+			keep = keep || instance.Image == id
+		}
+		if !keep {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := u.prune(ctx, id)
+			cancel()
+			if err != nil {
+				u.logger.Warn("Remove obsolete runner image", "error", err)
+				keep = true
+			}
+		}
+		if keep && !slices.Contains(next.Retired, id) {
+			next.Retired = append(next.Retired, id)
+		}
+	}
+	if len(next.Retired) != len(u.state.Retired) {
+		if err := u.save(next); err != nil {
+			u.logger.Error("Persist image cleanup", "error", err)
+		}
+	}
+}
+
+func (r *reconciler) imageChecked(event runnerEvent) {
+	u := r.images
+	defer func() {
+		if !r.draining {
+			r.pruneImages()
+		}
+		event.imageReply <- u.state
+	}()
+	next := u.state
+	next.LastCheck = event.checked
+	if event.err != nil {
+		u.logger.Warn("Check runner image update", "error", event.err)
+	}
+	p := event.image
+	if event.err == nil && p.recipe != nil && !r.draining && !rejected(next, *p.recipe) && p.recipe.Revision > next.Highest {
+		r.retire(&next, u.previous)
+		next.RollbackReason = ""
+		next.Previous, next.Current, next.Highest, next.Failures, next.RolledBack = next.Current, p.recipe, p.recipe.Revision, 0, false
+		if err := u.save(next); err != nil {
+			u.logger.Error("Save image update", "error", err)
+			return
+		}
+		u.previous = *r.active.Load()
+		r.setImage(p)
+		u.logger.Info("Activated runner image", "revision", p.recipe.Revision)
+	} else {
+		u.state.LastCheck = event.checked
+		if event.err != nil && p.recipe != nil && p.id != "" {
+			r.retire(&next, p)
+			if err := u.save(next); err != nil {
+				u.logger.Error("Track failed candidate cleanup", "error", err)
+			}
+		}
+	}
+}
+
+func (r *reconciler) imageOutcome(i vm.Instance, event runnerEvent) {
+	u := r.images
+	if u == nil || r.draining || u.state.Current == nil || i.ImageRevision != r.template.ImageRevision {
+		return
+	}
+	next := u.state
+	if event.kind == ready {
+		if next.Failures == 0 {
+			return
+		}
+		next.Failures = 0
+	} else {
+		switch event.stage {
+		case "check base image", "prepare VM", "start VM", "wait for readiness", "exit before readiness":
+			next.Failures++
+		default:
+			return
+		}
+	}
+	if next.Failures >= 3 && u.previous.check != nil {
+		if err := u.previous.check(); err != nil {
+			u.logger.Error("Cannot verify rollback runner image", "error", err)
+			return
+		}
+		r.retire(&next, *r.active.Load())
+		next.RollbackReason = event.stage
+		next.Rejected = append(append([]imagechannel.Recipe(nil), next.Rejected...), *next.Current)
+		next.Current, next.Previous, next.RolledBack, next.Failures = u.previous.recipe, nil, true, 0
+		if err := u.save(next); err != nil {
+			u.logger.Error("Save image rollback", "error", err)
+			return
+		}
+		r.setImage(u.previous)
+		u.previous = u.baseline
+		u.logger.Warn("Rolled back runner image", "reason", event.stage, "revision", i.ImageRevision)
+		return
+	}
+	if err := u.save(next); err != nil {
+		u.logger.Error("Save image startup outcome", "error", err)
+	}
+}
+
+func (u *imageUpdates) snapshot() *status.ImageUpdate {
+	if u == nil {
+		return nil
+	}
+	s := &status.ImageUpdate{Enabled: u.enabled, Current: "bundled", LastCheck: u.state.LastCheck, RolledBack: u.state.RolledBack, RollbackReason: u.state.RollbackReason}
+	if u.state.Current != nil {
+		s.Current = fmt.Sprint(u.state.Current.Revision)
+	}
+	if u.state.Previous != nil {
+		s.Previous = fmt.Sprint(u.state.Previous.Revision)
+	} else if u.state.Current != nil {
+		s.Previous = "bundled"
+	}
+	return s
+}

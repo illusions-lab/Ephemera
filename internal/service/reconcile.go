@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -48,20 +49,27 @@ const (
 	exited
 	idleRemoved
 	cleaned
+	imageChecked
+	imageUnavailable
 )
 
 type runnerEvent struct {
-	kind     eventKind
-	update   orders.Update
-	reply    chan struct{}
-	id       string
-	runnerID int
-	stage    string
-	err      error
+	kind       eventKind
+	image      preparedImage
+	checked    time.Time
+	imageReply chan updateState
+	update     orders.Update
+	reply      chan struct{}
+	id         string
+	runnerID   int
+	stage      string
+	err        error
 }
 
 type reconciler struct {
 	checkImage                  func() error
+	images                      *imageUpdates
+	active                      atomic.Pointer[preparedImage]
 	backend                     vm.Backend
 	registry                    registry
 	store                       instanceStore
@@ -101,7 +109,7 @@ func (r *reconciler) submit(ctx context.Context, event runnerEvent) error {
 	}
 }
 
-func (r *reconciler) run(ctx context.Context, restored []vm.Instance, recovered chan struct{}, capacity func(int)) error {
+func (r *reconciler) run(ctx context.Context, restored []vm.Instance, afterRecovery func() error, capacity func(int)) error {
 	workers, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -136,21 +144,19 @@ func (r *reconciler) run(ctx context.Context, restored []vm.Instance, recovered 
 			r.apply(event)
 		}
 		recovering := hasRecovery(r.instances)
-		if !recovering && recovered != nil {
-			close(recovered)
-			recovered = nil
+		if !recovering && afterRecovery != nil && ctx.Err() == nil && !r.draining {
+			if err := afterRecovery(); err != nil {
+				return err
+			}
+			afterRecovery = nil
 		}
 		free, counts := r.reconcile(workers, time.Now())
 		if ctx.Err() != nil {
 			free = 0
 		}
-		capacity(free)
-		if event.reply != nil {
-			close(event.reply)
-		}
 		if err := r.report(r.connected, recovering, r.draining, r.update, counts); err != nil && reportErr == nil {
 			reportErr = err
-			capacity(0)
+			free = 0
 			r.draining = true
 			r.connected = false
 			r.stopAt = time.Now()
@@ -158,6 +164,10 @@ func (r *reconciler) run(ctx context.Context, restored []vm.Instance, recovered 
 			timer := time.NewTimer(55 * time.Second)
 			defer timer.Stop()
 			shutdownDeadline = timer.C
+		}
+		capacity(free)
+		if event.reply != nil {
+			close(event.reply)
 		}
 	}
 }
@@ -190,7 +200,7 @@ func (r *reconciler) apply(event runnerEvent) {
 			for _, i := range r.instances {
 				if i.RunnerID == job.RunnerID && (i.phase == starting || i.phase == waiting) {
 					i.phase, i.deadline = running, time.Time{}
-					r.logger.Info("Job started", "instance", i.ID, "request_id", job.RunnerRequestID)
+					r.logger.Info("Job started", "instance", i.ID, "image_revision", i.ImageRevision, "image", i.Image, "request_id", job.RunnerRequestID)
 				}
 			}
 		}
@@ -205,12 +215,22 @@ func (r *reconciler) apply(event runnerEvent) {
 				}
 			}
 		}
+	case imageChecked:
+		r.imageChecked(event)
+	case imageUnavailable:
+		if r.active.Load() != nil && r.active.Load().recipe != nil && r.active.Load().recipe == event.image.recipe {
+			r.imageOutcome(r.template, event)
+		}
 	case disconnected:
 		r.connected = false
 	case registered:
 		r.instances[event.id].RunnerID = event.runnerID
 	case ready:
 		i := r.instances[event.id]
+		if i == nil {
+			return
+		}
+		r.imageOutcome(i.Instance, event)
 		r.startFailures = 0
 		r.retryStart = time.Time{}
 		i.launching = false
@@ -229,6 +249,7 @@ func (r *reconciler) apply(event runnerEvent) {
 			r.logger.Warn("Instance operation failed", "instance", i.ID, "phase", event.stage, "error", event.err)
 		}
 		if i.phase == starting {
+			r.imageOutcome(i.Instance, event)
 			r.startFailures++
 			r.retryStart = now.Add(backoff(r.startFailures))
 		}
@@ -314,7 +335,7 @@ func (r *reconciler) reconcile(ctx context.Context, now time.Time) (int, status.
 			i.ID, i.Resource = id.String(), runnerName(id.String())
 			startCtx, cancel := context.WithTimeout(ctx, r.startupTimeout)
 			r.instances[i.ID] = &instanceState{Instance: i, phase: starting, launching: true, cancel: cancel, deadline: now.Add(r.startupTimeout)}
-			go r.launch(ctx, startCtx, i)
+			go r.launch(ctx, startCtx, i, r.checkImage)
 		}
 		free = max(0, r.limit-len(r.instances))
 		for _, i := range r.instances {
@@ -339,7 +360,7 @@ func (r *reconciler) reconcile(ctx context.Context, now time.Time) (int, status.
 	return free, counts
 }
 
-func (r *reconciler) launch(ctx, startup context.Context, i vm.Instance) {
+func (r *reconciler) launch(ctx, startup context.Context, i vm.Instance, checkImage func() error) {
 	fail := func(stage string, err error) {
 		_ = r.send(ctx, runnerEvent{kind: exited, id: i.ID, stage: stage, err: err})
 	}
@@ -347,8 +368,8 @@ func (r *reconciler) launch(ctx, startup context.Context, i vm.Instance) {
 		fail("persist instance", err)
 		return
 	}
-	if r.checkImage != nil {
-		if err := r.checkImage(); err != nil {
+	if checkImage != nil {
+		if err := checkImage(); err != nil {
 			fail("check base image", err)
 			return
 		}
@@ -370,8 +391,8 @@ func (r *reconciler) launch(ctx, startup context.Context, i vm.Instance) {
 	if err := r.submit(ctx, runnerEvent{kind: registered, id: i.ID, runnerID: id}); err != nil {
 		return
 	}
-	if r.checkImage != nil {
-		if err := r.checkImage(); err != nil {
+	if checkImage != nil {
+		if err := checkImage(); err != nil {
 			fail("check base image", err)
 			return
 		}
@@ -432,8 +453,8 @@ func (r *reconciler) reclaim(ctx context.Context, i vm.Instance) (string, error)
 
 func validateRestored(instances []vm.Instance, template vm.Instance) error {
 	for _, i := range instances {
-		if i.Scope != template.Scope || i.Backend != template.Backend {
-			return fmt.Errorf("instance %s requires its original GitHub scope and VM backend for recovery", i.ID)
+		if i.Scope != template.Scope || i.ScaleSet != template.ScaleSet || i.Backend != template.Backend || i.Namespace != template.Namespace {
+			return fmt.Errorf("instance %s requires its original GitHub scope, VM backend and resource directory for recovery", i.ID)
 		}
 	}
 	return nil
