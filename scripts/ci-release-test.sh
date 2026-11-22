@@ -33,7 +33,8 @@ root_partition=$("${guestfish_cmd[@]}" run : inspect-os)
 root_size=$("${guestfish_cmd[@]}" run : blockdev-getsize64 "$root_partition")
 [[ "$root_size" =~ ^[0-9]+$ ]]
 printf 'Guest root partition %s has %s bytes\n' "$root_partition" "$root_size"
-(( root_size >= 15 * 2**30 && root_size < 16 * 2**30 ))
+# Leave room for the Ubuntu boot, EFI and reserved partitions.
+(( root_size >= 14 * 2**30 && root_size < 16 * 2**30 ))
 openssl genrsa -traditional -out "$work/key.pem" 2048
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=github.com \
   -addext 'subjectAltName=DNS:github.com,DNS:api.github.com' \
