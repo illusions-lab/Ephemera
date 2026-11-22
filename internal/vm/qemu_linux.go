@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/illusions-lab/Ephemera/internal/image"
@@ -22,7 +23,7 @@ import (
 
 type qemu struct {
 	QEMUConfig
-	binary   string
+	binary   atomic.Pointer[string]
 	platform qemuplatform.Platform
 }
 
@@ -48,7 +49,7 @@ func (q *qemu) Check(_ context.Context) error {
 	if err != nil {
 		return err
 	}
-	q.binary, err = filepath.EvalSymlinks(binary)
+	binary, err = filepath.EvalSymlinks(binary)
 	if err != nil {
 		return err
 	}
@@ -68,6 +69,7 @@ func (q *qemu) Check(_ context.Context) error {
 	fd, err := unix.PidfdOpen(os.Getpid(), 0)
 	if err == nil {
 		unix.Close(fd)
+		q.binary.Store(&binary)
 	}
 	return err
 }
@@ -81,8 +83,11 @@ func (q *qemu) Prepare(ctx context.Context, i Instance) error {
 	if err := os.Mkdir(dir, 0700); err != nil {
 		return err
 	}
-	return exec.CommandContext(ctx, "qemu-img", "create", "-f", "qcow2", "-F", "qcow2",
-		"-b", i.Image, filepath.Join(dir, "disk.qcow2")).Run()
+	cmd := exec.CommandContext(ctx, "qemu-img", "create", "-f", "qcow2", "-F", "qcow2",
+		"-b", i.Image, filepath.Join(dir, "disk.qcow2"))
+	var stderr boundedVMOutput
+	cmd.Stderr = &stderr
+	return qemuDiagnostic(cmd.Run(), stderr.output.String())
 }
 
 func (q *qemu) Start(ctx context.Context, i Instance, jit string) (Process, error) {
@@ -123,8 +128,14 @@ func (q *qemu) Start(ctx context.Context, i Instance, jit string) (Process, erro
 		"-nic", "user,model=virtio-net-pci",
 		"-drive", q.disk(i), "-drive", qemuplatform.FileOption(seed) + ",format=raw,if=virtio,readonly=on"}
 	args = append(args, q.platform.StatusArgs("")...)
-	cmd := exec.Command(q.binary, append(args, boot...)...)
+	binary := q.binary.Load()
+	if binary == nil {
+		return Process{}, errors.New("QEMU host must pass its startup check")
+	}
+	cmd := exec.Command(*binary, append(args, boot...)...)
 	cmd.Stdout = &readiness{ready: ready}
+	var stderr boundedVMOutput
+	cmd.Stderr = &stderr
 	// Keep the launching Linux thread alive until QEMU exits. The kernel
 	// tracks this thread for the parent-death signal.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL, Setpgid: true}
@@ -135,7 +146,9 @@ func (q *qemu) Start(ctx context.Context, i Instance, jit string) (Process, erro
 		err := cmd.Start()
 		started <- err
 		if err == nil {
-			exited <- cmd.Wait()
+			waitErr := cmd.Wait()
+			waitErr = qemuDiagnostic(waitErr, stderr.output.String())
+			exited <- waitErr
 			close(exited)
 		}
 	}()
@@ -147,6 +160,25 @@ func (q *qemu) Start(ctx context.Context, i Instance, jit string) (Process, erro
 
 func (q *qemu) disk(i Instance) string {
 	return qemuplatform.FileOption(filepath.Join(q.directory(i), "disk.qcow2")) + ",format=qcow2,if=virtio"
+}
+
+func qemuDiagnostic(err error, output string) error {
+	if err == nil || strings.TrimSpace(output) == "" {
+		return err
+	}
+	err = fmt.Errorf("%w: QEMU stderr: %s", err, strings.TrimSpace(output))
+	diagnostic := strings.ToLower(output)
+	for _, resource := range []string{"no space left", "cannot allocate memory", "resource temporarily unavailable", "disk quota exceeded"} {
+		if strings.Contains(diagnostic, resource) {
+			return err
+		}
+	}
+	for _, signature := range []string{"image is corrupt", "qcow2 header", "invalid backing file", "invalid qcow2", "could not open backing file"} {
+		if strings.Contains(diagnostic, signature) {
+			return errors.Join(ErrImageInfrastructure, err)
+		}
+	}
+	return err
 }
 
 type readiness struct {

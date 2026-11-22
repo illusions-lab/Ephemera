@@ -28,6 +28,7 @@ type Config struct {
 	Source    Source
 	VCPUs     int
 	MemoryMiB int
+	DiskGiB   int `json:",omitempty"`
 }
 
 // Prepare returns an immutable disk only after a successful guest boot check.
@@ -93,10 +94,17 @@ func CheckCached(ctx context.Context, root string, cfg Config) (Image, error) {
 	if err != nil {
 		return Image{}, err
 	}
-	return verifiedImage(ctx, filepath.Join(root, key))
+	target, err := cacheTarget(root, key)
+	if err != nil {
+		return Image{}, err
+	}
+	return verifiedImage(ctx, target)
 }
 
 func imageCacheKey(cfg Config) (string, error) {
+	if cfg.DiskGiB == 12 {
+		cfg.DiskGiB = 0
+	}
 	recipe, err := json.Marshal(cfg)
 	if err != nil {
 		return "", err
@@ -217,7 +225,7 @@ func (c cache) buildUbuntu(ctx context.Context, work string, cfg Config) error {
 	c.logger.Info("Assembling Ubuntu image")
 	// Grow the guest filesystem before installing packages, using Ubuntu's
 	// partition layout rather than relying on cloud-init at runner boot.
-	if err := command(ctx, "qemu-img", "create", "-f", "qcow2", disk, "12G"); err != nil {
+	if err := command(ctx, "qemu-img", "create", "-f", "qcow2", disk, strconv.Itoa(max(12, cfg.DiskGiB))+"G"); err != nil {
 		return err
 	}
 	if err := command(ctx, "virt-resize", "--format", "qcow2", "--output-format", "qcow2", "--align-first", "never",

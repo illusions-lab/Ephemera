@@ -175,7 +175,7 @@ sudo apt install qemu-system-x86 qemu-utils guestfs-tools cloud-image-utils
 sudo apt install qemu-system-arm qemu-efi-aarch64 qemu-utils guestfs-tools cloud-image-utils
 ```
 
-Run `sudo ephe image prepare` to build or verify the selected image. Linux caches validated disks under `/var/lib/ephemera/image` and uses copy-on-write overlays for jobs. To change source pins, update `image.ubuntu.amd64` or `image.ubuntu.arm64` in the [example configuration](configs/ephemera.example.yaml). If libguestfs stalls on a nested host, try `LIBGUESTFS_BACKEND_SETTINGS=force_tcg` for image preparation. Job execution still requires KVM.
+Run `sudo ephe image prepare` to build or verify the selected image. Linux caches validated disks under `/var/lib/ephemera/image` and uses copy-on-write overlays for jobs. Set `vm.disk_gib` to change the QEMU guest disk size from 12 GiB. Tart execution prepares a local base with a verified runner before activation, and job VMs clone that base. To change source pins, update `image.ubuntu.amd64` or `image.ubuntu.arm64` in the [example configuration](configs/ephemera.example.yaml). If libguestfs stalls on a nested host, try `LIBGUESTFS_BACKEND_SETTINGS=force_tcg` for image preparation. Job execution still requires KVM.
 
 The Linux setup wizard maps the Ubuntu 24.04 catalog entries above to Ephemera's recipes. Use the [official image catalog](https://github.com/actions/runner-images#available-images) to look up tools preinstalled in GitHub's hosted images.
 
@@ -189,7 +189,11 @@ sudo ephe update
 sudo ephe update --apply
 ```
 
-The installer verifies the release checksum and rolls back the active version and service state if activation fails. Configuration, credentials, and the image cache are retained. The installer accepts `--version TAG` for a pinned release and `--bundle DIR` for an offline bundle.
+Apply drains active local jobs before switching the daemon. The terminal lists the repository, workflow run, job, and runner for each local VM. Waiting is the default, including with redirected input. Use `sudo ephe service stop` or `sudo ephe service restart` on Linux, and run the same commands as the LaunchAgent owner on macOS.
+
+To move from a release that predates drain support, stage the update, let active jobs finish during a maintenance window, then stop the old service through systemd or launchd. On Linux, apply the staged upgrade with `sudo /opt/ephemera/staged/install.sh --update --apply`. On macOS, rerun the installer after unloading the old LaunchAgent.
+
+The installer verifies the release checksum and restores the previous version and service state if activation fails. Configuration, credentials, and the image cache are retained. The installer accepts `--version TAG` for a pinned release and `--bundle DIR` for an offline bundle.
 
 For unattended Linux installation with an existing App:
 

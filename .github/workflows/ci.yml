@@ -14,7 +14,35 @@ concurrency:
   group: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && 'ephemera-release' || format('ephemera-ci-{0}', github.run_id) }}
   queue: max
 jobs:
+  source:
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      arm64: ${{ steps.source.outputs.arm64 }}
+      darwin: ${{ steps.source.outputs.darwin }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: source
+        env:
+          RETRY_TAG: ${{ inputs.retry_tag }}
+        run: |
+          commit=$GITHUB_SHA
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            [[ "$GITHUB_REF" == refs/heads/main && "$RETRY_TAG" =~ ^v0\.1\.[0-9]+$ ]]
+            commit=$(git rev-parse "refs/tags/$RETRY_TAG^{commit}")
+            git merge-base --is-ancestor "$commit" "$GITHUB_SHA"
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          release_config=$(git show "$commit:.goreleaser.yaml")
+          arm64=false
+          darwin=false
+          if grep -Fq 'goarch: [amd64, arm64]' <<< "$release_config"; then arm64=true; fi
+          if grep -Fq 'id: darwin-bundle' <<< "$release_config"; then darwin=true; fi
+          printf 'arm64=%s\ndarwin=%s\n' "$arm64" "$darwin" >> "$GITHUB_OUTPUT"
   check:
+    needs: source
     strategy:
       fail-fast: false
       matrix:
@@ -24,18 +52,24 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.source.outputs.commit }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
       - run: make check
       - uses: goreleaser/goreleaser-action@v6
-        if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+        if: >-
+          (github.event_name != 'push' || github.ref != 'refs/heads/main') &&
+          (matrix.arch == 'amd64' || needs.source.outputs.arm64 == 'true')
         with:
           version: v2.12.7
           args: release --snapshot --clean
       - name: Verify snapshot archive
-        if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+        if: >-
+          (github.event_name != 'push' || github.ref != 'refs/heads/main') &&
+          (matrix.arch == 'amd64' || needs.source.outputs.arm64 == 'true')
         run: |
           cd dist
           sha256sum -c checksums.txt
@@ -45,6 +79,7 @@ jobs:
           test "$(verify/ephemera version)" = "$(verify/ephemerad --version)"
 
   ubuntu-install:
+    needs: source
     strategy:
       fail-fast: false
       matrix:
@@ -53,6 +88,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.source.outputs.commit }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -60,14 +97,22 @@ jobs:
       - name: Exercise installation and rollback on Ubuntu
         run: scripts/ci-install-test.sh
   ubuntu-vm:
+    needs: source
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     uses: ./.github/workflows/ubuntu-vm.yml
+    with:
+      checkout_ref: ${{ needs.source.outputs.commit }}
+      linux_amd64_only: ${{ needs.source.outputs.arm64 != 'true' }}
 
   macos-install:
+    needs: source
+    if: needs.source.outputs.darwin == 'true'
     runs-on: macos-26
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.source.outputs.commit }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -85,8 +130,13 @@ jobs:
         run: scripts/verify-macos-bundle.sh dist scripts/install-macos.sh
 
   release:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: [check, ubuntu-install, ubuntu-vm, macos-install]
+    if: >-
+      !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
+      needs.source.result == 'success' && needs.check.result == 'success' &&
+      needs.ubuntu-install.result == 'success' && needs.ubuntu-vm.result == 'success' &&
+      (needs.macos-install.result == 'success' ||
+       (needs.source.outputs.darwin != 'true' && needs.macos-install.result == 'skipped'))
+    needs: [source, check, ubuntu-install, ubuntu-vm, macos-install]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -94,11 +144,11 @@ jobs:
       tag: ${{ steps.tag.outputs.tag }}
       commit: ${{ steps.tag.outputs.commit }}
       published: ${{ steps.existing.outputs.published }}
-      darwin: ${{ steps.assets.outputs.darwin }}
-      arm64: ${{ steps.assets.outputs.arm64 }}
+      verified_sha256: ${{ steps.verify.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.source.outputs.commit }}
           fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
@@ -112,6 +162,7 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
             [[ "$RETRY_TAG" =~ ^v0\.1\.[0-9]+$ ]]
             commit=$(git rev-parse "refs/tags/$RETRY_TAG^{commit}")
+            test "$(git rev-parse HEAD)" = "$commit"
             printf 'tag=%s\ncommit=%s\n' "$RETRY_TAG" "$commit" >> "$GITHUB_OUTPUT"
           else
             scripts/release-tag.sh
@@ -130,7 +181,7 @@ jobs:
             true) echo 'draft=true' >> "$GITHUB_OUTPUT" ;;
           esac
       - uses: goreleaser/goreleaser-action@v6
-        if: github.event_name == 'push' && steps.existing.outputs.published != 'true' && steps.existing.outputs.draft != 'true'
+        if: steps.existing.outputs.published != 'true' && steps.existing.outputs.draft != 'true'
         with:
           distribution: goreleaser
           version: v2.12.7
@@ -138,26 +189,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GORELEASER_CURRENT_TAG: ${{ steps.tag.outputs.tag }}
-      - name: Identify assets for the release commit
-        id: assets
-        env:
-          RELEASE_COMMIT: ${{ steps.tag.outputs.commit }}
-        run: |
-          release_config=$(git show "$RELEASE_COMMIT:.goreleaser.yaml")
-          if grep -Fq 'id: darwin-bundle' <<< "$release_config"; then
-            echo 'darwin=true' >> "$GITHUB_OUTPUT"
-          fi
-          if grep -Fq 'goarch: [amd64, arm64]' <<< "$release_config"; then
-            echo 'arm64=true' >> "$GITHUB_OUTPUT"
-          fi
       - name: Verify release bundle
-        if: steps.existing.outputs.published != 'true'
+        id: verify
         env:
           TAG: ${{ steps.tag.outputs.tag }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ steps.tag.outputs.commit }}
-          DARWIN: ${{ steps.assets.outputs.darwin }}
-          ARM64: ${{ steps.assets.outputs.arm64 }}
+          DARWIN: ${{ needs.source.outputs.darwin }}
+          ARM64: ${{ needs.source.outputs.arm64 }}
         run: |
           mkdir -p "$RUNNER_TEMP/release"
           darwin_assets=()
@@ -167,7 +206,7 @@ jobs:
           gh release download "$TAG" --dir "$RUNNER_TEMP/release" \
             --pattern 'ephemera_linux_*.tar.gz' --pattern checksums.txt --pattern install.sh "${darwin_assets[@]}"
           cd "$RUNNER_TEMP/release"
-          sha256sum -c checksums.txt
+          sha256sum --strict -c checksums.txt
           arches=(amd64)
           if [[ "$ARM64" == true ]]; then
             arches+=(arm64)
@@ -192,71 +231,119 @@ jobs:
             test "$("${executor[@]}" "verify-$arch/ephemera" version)" = "$TAG $RELEASE_COMMIT"
             test "$("${executor[@]}" "verify-$arch/ephemerad" --version)" = "$TAG $RELEASE_COMMIT"
           done
+          # The public download must match the bytes inspected by CI.
+          files=(checksums.txt install.sh ephemera_linux_amd64.tar.gz)
+          if [[ "$ARM64" == true ]]; then files+=(ephemera_linux_arm64.tar.gz); fi
+          if [[ "$DARWIN" == true ]]; then files+=(ephemera_darwin_arm64.tar.gz install-macos.sh); fi
+          {
+            echo 'sha256<<CHECKSUMS'
+            sha256sum "${files[@]}"
+            echo CHECKSUMS
+          } >> "$GITHUB_OUTPUT"
 
   verify-darwin:
-    needs: release
-    if: needs.release.outputs.published != 'true' && needs.release.outputs.darwin == 'true'
+    needs: [source, release]
+    if: needs.source.outputs.darwin == 'true'
     runs-on: macos-26
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.source.outputs.commit }}
       - name: Verify Darwin release natively
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.release.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.release.outputs.commit }}
+          VERIFIED_SHA256: ${{ needs.release.outputs.verified_sha256 }}
         run: |
           assets="$RUNNER_TEMP/release"
           gh release download "$TAG" --dir "$assets" \
             --pattern ephemera_darwin_arm64.tar.gz --pattern checksums.txt --pattern install-macos.sh
+          (
+            cd "$assets"
+            awk '$2 == "checksums.txt" || $2 == "ephemera_darwin_arm64.tar.gz" || $2 == "install-macos.sh" {print}' \
+              <<< "$VERIFIED_SHA256" > verified.sha256
+            test "$(wc -l < verified.sha256)" -eq 3
+            shasum -a 256 -c verified.sha256
+          )
           scripts/verify-macos-bundle.sh "$assets" "$assets/install-macos.sh" "$TAG $RELEASE_COMMIT"
 
   publish:
-    needs: [release, verify-darwin]
+    needs: [source, release, verify-darwin]
     if: >-
-      always() && needs.release.result == 'success' && needs.release.outputs.published != 'true' &&
+      !cancelled() && needs.release.result == 'success' && needs.release.outputs.published != 'true' &&
       (needs.verify-darwin.result == 'success' ||
-       (needs.release.outputs.darwin != 'true' && needs.verify-darwin.result == 'skipped'))
+       (needs.source.outputs.darwin != 'true' && needs.verify-darwin.result == 'skipped'))
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    outputs:
+      expected_latest: ${{ steps.publish.outputs.expected_latest }}
     steps:
       - name: Publish verified draft
+        id: publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.release.outputs.tag }}
-          DARWIN: ${{ needs.release.outputs.darwin }}
-          ARM64: ${{ needs.release.outputs.arm64 }}
+          RELEASE_COMMIT: ${{ needs.release.outputs.commit }}
         run: |
+          # Recheck the remote ref after the verification jobs.
+          ref="refs/tags/$TAG"
+          refs=$(git ls-remote --exit-code "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$ref" "$ref^{}")
+          actual=$(awk -v ref="$ref" '$2 == ref {direct=$1} $2 == ref "^{}" {peeled=$1} END { print (peeled ? peeled : direct) }' <<< "$refs")
+          test "$actual" = "$RELEASE_COMMIT"
           published=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')
           latest=$(printf '%s\n' "$published" | grep -E '^v0\.1\.[0-9]+$' | sort -V | tail -n1 || true)
           if [ -n "$latest" ] && [ "$(printf '%s\n%s\n' "$TAG" "$latest" | sort -V | tail -n1)" != "$TAG" ]; then
             expected_latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
-            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft=false --latest=false
           else
             expected_latest=$TAG
-            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft=false --latest
           fi
-          assets=(checksums.txt ephemera_linux_amd64.tar.gz install.sh)
-          if [[ "$ARM64" == true ]]; then
-            assets+=(ephemera_linux_arm64.tar.gz)
-          fi
-          if [[ "$DARWIN" == true ]]; then
-            assets+=(ephemera_darwin_arm64.tar.gz install-macos.sh)
-          fi
-          for asset in "${assets[@]}"; do
+          echo "expected_latest=$expected_latest" >> "$GITHUB_OUTPUT"
+
+  verify-public:
+    needs: [source, release, verify-darwin, publish]
+    if: >-
+      !cancelled() && needs.release.result == 'success' &&
+      (needs.verify-darwin.result == 'success' ||
+       (needs.source.outputs.darwin != 'true' && needs.verify-darwin.result == 'skipped')) &&
+      (needs.publish.result == 'success' ||
+       (needs.release.outputs.published == 'true' && needs.publish.result == 'skipped'))
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify public tag and release downloads
+        env:
+          TAG: ${{ needs.release.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.release.outputs.commit }}
+          VERIFIED_SHA256: ${{ needs.release.outputs.verified_sha256 }}
+          EXPECTED_LATEST: ${{ needs.publish.outputs.expected_latest }}
+        run: |
+          base="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          ref="refs/tags/$TAG"
+          refs=$(git ls-remote --exit-code "$base.git" "$ref" "$ref^{}")
+          actual=$(awk -v ref="$ref" '$2 == ref {direct=$1} $2 == ref "^{}" {peeled=$1} END { print (peeled ? peeled : direct) }' <<< "$refs")
+          test "$actual" = "$RELEASE_COMMIT"
+          test -n "$VERIFIED_SHA256"
+          mkdir "$RUNNER_TEMP/public-release"
+          cd "$RUNNER_TEMP/public-release"
+          while read -r digest asset; do
+            [[ "$digest" =~ ^[[:xdigit:]]{64}$ && "$asset" =~ ^[a-zA-Z0-9_.-]+$ ]]
             curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
-              --output /dev/null "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$asset" ||
-              { echo "Public asset could not be downloaded: $asset" >&2; exit 1; }
-          done
+              --output "$asset" "$base/releases/download/$TAG/$asset"
+          done <<< "$VERIFIED_SHA256"
+          sha256sum --strict -c - <<< "$VERIFIED_SHA256"
+          if [[ -z "$EXPECTED_LATEST" ]]; then exit 0; fi
           for attempt in {1..6}; do
             actual=$(curl --fail --silent --show-error --location --output /dev/null \
-              --write-out '%{url_effective}' "https://github.com/$GITHUB_REPOSITORY/releases/latest") || actual=
-            if [[ "$actual" == "https://github.com/$GITHUB_REPOSITORY/releases/tag/$expected_latest" ]]; then
+              --write-out '%{url_effective}' "$base/releases/latest") || actual=
+            if [[ "$actual" == "$base/releases/tag/$EXPECTED_LATEST" ]]; then
               exit 0
             fi
             if (( attempt < 6 )); then sleep 5; fi
           done
-          echo "Expected latest release $expected_latest, got ${actual:-no release}" >&2
+          echo "Expected latest release $EXPECTED_LATEST, got ${actual:-no release}" >&2
           exit 1

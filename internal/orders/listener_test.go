@@ -194,7 +194,7 @@ func (s *sequenceSession) DeleteMessage(context.Context, int) error {
 
 func TestExecutionPollReplaysAndTracksPendingAcquisitions(t *testing.T) {
 	s := &sequenceSession{
-		fakeSession: fakeSession{initial: &scaleset.RunnerScaleSetStatistic{TotalAcquiredJobs: 1}},
+		fakeSession: fakeSession{initial: &scaleset.RunnerScaleSetStatistic{TotalAcquiredJobs: 1, TotalAssignedJobs: 1}},
 		messages: []*scaleset.RunnerScaleSetMessage{
 			{MessageID: 1, JobAvailableMessages: []*scaleset.JobAvailable{offer(10), offer(20)}},
 			{MessageID: 1, JobAvailableMessages: []*scaleset.JobAvailable{offer(10), offer(20)}},

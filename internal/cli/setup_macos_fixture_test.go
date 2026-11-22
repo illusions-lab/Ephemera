@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/illusions-lab/Ephemera/internal/config"
+	"github.com/illusions-lab/Ephemera/internal/control"
 	"github.com/illusions-lab/Ephemera/internal/macos"
 	"github.com/illusions-lab/Ephemera/internal/status"
 	"github.com/illusions-lab/Ephemera/internal/version"
@@ -47,6 +48,23 @@ func runInstallFixture(args []string) error {
 		defer closeStatus()
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
+		closeControl, err := control.Listen(ctx, macos.StateDir(), func(ctx context.Context, req <-chan control.Request, reply chan<- control.Snapshot) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-req:
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case reply <- control.Snapshot{Ready: true}:
+			}
+			<-ctx.Done()
+		})
+		if err != nil {
+			return err
+		}
+		defer closeControl()
 		<-ctx.Done()
 		return nil
 	}
@@ -102,6 +120,9 @@ func runDaemonFixture(args []string) error {
 	}
 	if cfg.Runner.Execute {
 		snapshot.Intake = "executing"
+		if _, err := tart.CheckPreparedImage(context.Background(), cfg.VM.ImageRef, vm.TartRunnerVersion, vm.TartRunnerSHA256); err != nil {
+			return fmt.Errorf("installer entered the readiness window without a prepared image: %w", err)
+		}
 	}
 	body, err := json.Marshal(snapshot)
 	if err != nil {

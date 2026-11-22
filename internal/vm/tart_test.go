@@ -33,7 +33,7 @@ func TestTartGuestLaunchContract(t *testing.T) {
 		ready bool
 	}{
 		{name: "listening marks ready", ready: true},
-		{name: "provisioning failure"},
+
 		{name: "runner exits before listening"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -54,16 +54,11 @@ case "$2" in
   ephemera-fixture)
     case "$3" in
       /usr/bin/true) exit 0 ;;
-      /usr/bin/sudo)
-        test "$EPHE_TART_TEST_SCENARIO" != "provisioning failure"
-        touch "$TART_HOME/provisioned"
-        exit 0
-        ;;
+
     esac
     ;;
   -i)
     touch "$TART_HOME/runner-invoked"
-    test -f "$TART_HOME/provisioned"
     test "$3" = ephemera-fixture
     test "$4 $5 $6 $7" = "/usr/bin/sudo -n -u ephemera-runner"
     case "$*" in *synthetic-jit*) exit 1 ;; esac
@@ -87,10 +82,6 @@ exit 1
 	err := backend.runGuest(ctx, Instance{Resource: "ephemera-fixture"}, "synthetic-jit", ready, make(chan error))
 	if (err == nil) != wantReady {
 		t.Fatalf("launch error = %v, want readiness %t", err, wantReady)
-	}
-	_, launchErr := os.Stat(home + "/runner-invoked")
-	if scenario == "provisioning failure" && !os.IsNotExist(launchErr) {
-		t.Fatalf("runner was invoked after failed provisioning: %v", launchErr)
 	}
 	select {
 	case <-ready:

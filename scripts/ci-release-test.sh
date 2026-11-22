@@ -16,8 +16,25 @@ cleanup() {
 trap cleanup EXIT
 
 arch=$(dpkg --print-architecture)
-sed -e "s/arch: amd64/arch: $arch/" -e "s/ephemera-ubuntu-amd64/ephemera-ubuntu-$arch/" configs/ephemera.example.yaml > "$work/config.yaml"
-sudo env LIBGUESTFS_BACKEND=direct EPHEMERA_OFFLINE_BOOT_DEBUG=1 "$bundle/ephemera" image prepare --config "$work/config.yaml"
+awk -v arch="$arch" '
+  /^  arch: / { $0 = "  arch: " arch }
+  /^  scale_set_name: / { $0 = "  scale_set_name: ephemera-ubuntu-" arch }
+  { print }
+  /^  memory_mib:/ { print "  disk_gib: 16" }
+' configs/ephemera.example.yaml > "$work/config.yaml"
+disk=$(sudo env LIBGUESTFS_BACKEND=direct EPHEMERA_OFFLINE_BOOT_DEBUG=1 \
+  "$bundle/ephemera" image prepare --config "$work/config.yaml")
+test -n "$disk"
+sudo qemu-img info --output=json "$disk" | python3 -c \
+  'import json, sys; assert json.load(sys.stdin)["virtual-size"] == 16 * 2**30'
+guestfish_cmd=(sudo env LIBGUESTFS_BACKEND=direct guestfish --ro --format=qcow2 -a "$disk")
+root_partition=$("${guestfish_cmd[@]}" run : inspect-os)
+[[ "$root_partition" =~ ^/dev/sda[0-9]+$ ]]
+root_size=$("${guestfish_cmd[@]}" run : blockdev-getsize64 "$root_partition")
+[[ "$root_size" =~ ^[0-9]+$ ]]
+printf 'Guest root partition %s has %s bytes\n' "$root_partition" "$root_size"
+# Leave room for the Ubuntu boot, EFI and reserved partitions.
+(( root_size >= 14 * 2**30 && root_size < 16 * 2**30 ))
 openssl genrsa -traditional -out "$work/key.pem" 2048
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=github.com \
   -addext 'subjectAltName=DNS:github.com,DNS:api.github.com' \
@@ -41,5 +58,8 @@ sudo bash "$bundle/install.sh" --bundle "$bundle" --non-interactive \
   --config "$work/config.yaml" --github-app-key "$work/key.pem"
 systemctl is-active --quiet ephemera.service
 test "$(systemctl show -p StatusText --value ephemera.service)" = Healthy
-sudo systemctl stop ephemera.service
+sudo ephe service restart
+systemctl is-active --quiet ephemera.service
+test "$(systemctl show -p StatusText --value ephemera.service)" = Healthy
+sudo ephe service stop
 test "$(systemctl show -p ActiveState --value ephemera.service)" = inactive

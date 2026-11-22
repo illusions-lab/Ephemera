@@ -3,6 +3,10 @@ set -euo pipefail
 
 die() { printf 'install: %s\n' "$*" >&2; exit 1; }
 usage() { printf '%s\n' 'Usage: sudo bash install.sh [--version TAG | --bundle DIR] [--non-interactive --config FILE --github-app-key FILE]' '       ephe update [--check | --apply]'; }
+recovery_mode=
+case "${1:-}" in
+  --recover|--recover-boot|--guard-start) recovery_mode=$1; shift;;
+esac
 version='' bundle='' config='' key='' mode=install
 non_interactive=false
 while (($#)); do
@@ -65,34 +69,84 @@ if [[ "$mode" == check ]]; then
 fi
 [[ "$(uname -s)" == Linux && "$EUID" -eq 0 ]] || die 'installation requires Linux and root'
 if [[ ! -d /run/systemd/system ]] || ! command -v systemctl >/dev/null; then die 'installation requires a running systemd instance'; fi
+mkdir -p /run/lock
 exec 9>/run/lock/ephemera-install.lock
-flock -n 9 || die 'another Ephemera install is in progress'
+if ! flock -n 9; then
+  [[ "$recovery_mode" == --guard-start ]] && exit 0
+  die 'another Ephemera install is in progress'
+fi
 mkdir -p "$root/releases"
 txn=$root/transaction
 atomic_link() { ln -sfn "$1" "$2.new"; mv -Tf "$2.new" "$2"; }
+restore_files() {
+  if [[ -f "$txn/disable" ]]; then
+    rm -f /etc/systemd/system/multi-user.target.wants/ephemera.service || return
+  fi
+  if [[ -f "$txn/previous" ]]; then
+    atomic_link "$(cat "$txn/previous")" "$current" || return
+  else
+    rm -f "$current" || return
+  fi
+  if [[ -f "$txn/unit" ]]; then
+    install -m 0644 "$txn/unit" "$unit.recovery" && mv -Tf "$unit.recovery" "$unit" || return
+  else
+    rm -f "$unit" || return
+  fi
+  sync -f "$root" && sync -f "$(dirname "$unit")"
+}
+finish_transaction() {
+  # Rename is the commit point and leaves a recoverable journal until then.
+  sync -f /etc/systemd/system && mv -Tf "$txn" "$temp/finished-transaction" && sync -f "$root"
+}
 rollback() {
   [[ -d "$txn" ]] || return 0
   printf 'Restoring previous installation...\n' >&2
-  local failed=false
-  # Cancel any start job left behind by an interrupted installer.
-  if [[ -f "$unit" ]]; then systemctl stop ephemera.service 9>&- || failed=true; fi
-  if [[ -f "$txn/disable" ]]; then
-    systemctl disable ephemera.service || die 'failed to undo service enablement; transaction and candidate unit retained for recovery'
-    rm -f "$txn/disable"
+  if [[ -f "$txn/switching" ]]; then
+    systemctl stop ephemera.service 9>&- || return
+    if [[ -f "$txn/disable" ]]; then
+      systemctl disable ephemera.service || return
+    fi
+    restore_files || return
+    systemctl daemon-reload || return
+    if [[ -f "$txn/unit" ]]; then systemctl reset-failed ephemera.service || return; fi
   fi
-  if [[ -f "$txn/previous" ]]; then atomic_link "$(cat "$txn/previous")" "$current" || failed=true; else rm -f "$current" || failed=true; fi
-  if [[ -f "$txn/unit" ]]; then install -m 0644 "$txn/unit" "$unit" || failed=true; else rm -f "$unit" || failed=true; fi
-  systemctl daemon-reload || failed=true
-  if [[ -f "$txn/unit" ]]; then systemctl reset-failed ephemera.service || failed=true; fi
   if [[ -f "$txn/active" ]]; then
-    systemctl start ephemera.service 9>&- || failed=true
+    systemctl start ephemera.service 9>&- || return
   fi
-  if "$failed"; then die 'rollback failed; transaction and releases retained for repair'; fi
-  rm -rf "$txn"
+  finish_transaction
 }
-rollback
+if [[ "$recovery_mode" == --guard-start ]]; then
+  if [[ -d "$txn" ]]; then
+    flock -u 9
+    systemctl --no-block start ephemera-recover.service 9>&-
+    exit 1
+  fi
+  exit 0
+fi
+temp=$(mktemp -d "$root/.install.XXXXXXXX")
+trap 'rm -rf -- "$temp"' EXIT
+if [[ "$recovery_mode" == --recover-boot ]]; then
+  if [[ -f "$txn/boot-id" && "$(cat "$txn/boot-id")" != "$(cat /proc/sys/kernel/random/boot_id)" ]]; then
+    # A start job can already be ordered behind this recovery unit. Cancel
+    # it if the candidate installed a unit or enabled a previously disabled one.
+    if [[ ! -f "$txn/unit" || -f "$txn/disable" ]]; then
+      systemctl --no-block stop ephemera.service 9>&-
+    fi
+    restore_files || die 'boot recovery could not restore the previous installation'
+    systemctl daemon-reload
+    if [[ -f "$txn/active" ]]; then
+      systemctl --no-block start ephemera.service 9>&-
+    fi
+    finish_transaction
+  fi
+  exit 0
+fi
+rollback || die 'rollback failed; transaction and releases retained for repair'
+if [[ "$recovery_mode" == --recover ]]; then exit 0; fi
+
 first=true
 resume=false
+replace_residue=false
 [[ -e "$destination" || -L "$destination" ]] && first=false
 if ! "$first"; then
   installed=false
@@ -111,10 +165,22 @@ if ! "$first"; then
   fi
   [[ -f "$credential" && ! -L "$credential" && "$(stat -c '%u:%a' "$credential")" == 0:600 ]] || die 'invalid GitHub App private key permissions'
 fi
-temp=$(mktemp -d "$root/.install.XXXXXXXX")
-trap 'rm -rf -- "$temp"' EXIT
+finish_install() {
+  local result=$?
+  trap - EXIT
+  trap '' INT TERM
+  if (( result != 0 )); then
+    rollback || printf 'install: rollback failed; transaction and releases retained for repair\n' >&2
+  fi
+  rm -rf -- "$temp"
+  exit "$result"
+}
+trap finish_install EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+if "$first" && "$non_interactive" && [[ -n "$key" && ( -e "$credential" || -L "$credential" ) ]]; then
+  replace_residue=true
+fi
 if [[ "$mode" != apply ]]; then
   if [[ -z "$bundle" ]]; then
     [[ -n "$version" ]] || version=$(latest_version)
@@ -148,6 +214,7 @@ if [[ "$mode" != apply ]]; then
     [[ -r "$config" && -r "$key" ]] || die 'first install requires readable config and key'
     setup_args=(--non-interactive --config "$config" --github-app-key "$key")
     if "$resume"; then setup_args+=(--resume); fi
+    if "$replace_residue"; then setup_args+=(--recover-residual-key); fi
     "$temp/ephemera" setup "${setup_args[@]}"
   fi
   [[ ! -f "$destination" ]] || "$temp/ephemera" config validate --config "$destination"
@@ -181,20 +248,64 @@ getent group kvm >/dev/null || groupadd --system kvm
 if ! id ephemera >/dev/null 2>&1; then
   useradd --system --user-group --home-dir /var/lib/ephemera --shell /usr/sbin/nologin ephemera
 fi
+# Install the independent recovery entry before recording or changing the service.
+recovery_source=$0
+if [[ ! -f "$recovery_source" ]]; then recovery_source=$staged/install.sh; fi
+install -m 0755 "$recovery_source" "$root/recover-install.new"
+mv -Tf "$root/recover-install.new" "$root/recover-install"
+cat > "$temp/recovery-boot-unit" <<'UNIT'
+[Unit]
+Description=Restore Ephemera installation before daemon startup
+ConditionPathExists=/opt/ephemera/transaction
+Before=ephemera.service
+RequiresMountsFor=/opt/ephemera
+[Service]
+Type=oneshot
+ExecStart=/opt/ephemera/recover-install --recover-boot
+[Install]
+WantedBy=multi-user.target
+UNIT
+install -m 0644 "$temp/recovery-boot-unit" /etc/systemd/system/ephemera-recover-boot.service
+install -d -m 0755 /etc/systemd/system/multi-user.target.wants
+ln -sfn ../ephemera-recover-boot.service /etc/systemd/system/multi-user.target.wants/ephemera-recover-boot.service
+cat > "$temp/recovery-unit" <<'UNIT'
+[Unit]
+Description=Recover an interrupted Ephemera installation
+[Service]
+Type=oneshot
+ExecStart=/opt/ephemera/recover-install --recover
+UNIT
+install -m 0644 "$temp/recovery-unit" /etc/systemd/system/ephemera-recover.service
+sync -f "$root"
+sync -f /etc/systemd/system
 mkdir "$temp/transaction"
 [[ ! -L "$current" ]] || readlink "$current" > "$temp/transaction/previous"
 [[ ! -f "$unit" ]] || cp "$unit" "$temp/transaction/unit"
-if systemctl is-active --quiet ephemera.service; then touch "$temp/transaction/active"; fi
+cat /proc/sys/kernel/random/boot_id > "$temp/transaction/boot-id"
+service_state=$(systemctl show --property=ActiveState --value ephemera.service) || die 'could not determine current service state'
+case "$service_state" in
+  active|activating|reloading|deactivating) touch "$temp/transaction/active" ;;
+  inactive|failed) ;;
+  *) die "cannot verify that the service is stopped ($service_state); staged version retained at $staged" ;;
+esac
 mv "$temp/transaction" "$txn"
+sync -f "$root"
+if [[ -f "$txn/active" ]]; then
+  "$staged/ephemera" service stop 9>&- || die "upgrade paused; staged version retained at $staged"
+fi
+touch "$txn/switching"
+sync -f "$root"
 atomic_link "$(readlink "$staged")" "$current"
 for binary in ephemera ephemerad; do atomic_link "$current/$binary" "/usr/local/bin/$binary"; done
 if [[ -e /usr/local/bin/ephe || -L /usr/local/bin/ephe ]]; then
-  [[ -L /usr/local/bin/ephe && "$(readlink /usr/local/bin/ephe)" == ephemera ]] || { rollback; die 'ephe alias already exists'; }
+  [[ -L /usr/local/bin/ephe && "$(readlink /usr/local/bin/ephe)" == ephemera ]] || { die 'ephe alias already exists'; }
 else ln -s ephemera /usr/local/bin/ephe; fi
-install -m 0644 "$current/ephemera.service" "$unit"
-if ! systemctl daemon-reload; then rollback; die 'daemon-reload failed'; fi
+install -m 0644 "$current/ephemera.service" "$unit.new"
+mv -Tf "$unit.new" "$unit"
+sync -f "$(dirname "$unit")"
+if ! systemctl daemon-reload; then die 'daemon-reload failed'; fi
 if "$first" && ! "$non_interactive" && [[ "$mode" == install ]]; then
-  rm -rf "$txn"; rm -f "$staged"
+  finish_transaction; rm -f "$staged"
   printf 'Ephemera installed.\n'
   if ( : <> /dev/tty ) 2>/dev/null; then
     if "$online" && ! install_cloudflared; then
@@ -208,11 +319,11 @@ if "$first" && ! "$non_interactive" && [[ "$mode" == install ]]; then
   exit 0
 fi
 if "$non_interactive"; then
-  if [[ ! -f "$txn/previous" && ! -f "$txn/unit" ]]; then touch "$txn/disable"; fi
-  systemctl enable ephemera.service || { rollback; die 'failed to enable service'; }
+  if ! systemctl is-enabled --quiet ephemera.service; then touch "$txn/disable"; sync -f "$root"; fi
+  systemctl enable ephemera.service || { die 'failed to enable service'; }
 fi
-if ! systemctl restart ephemera.service 9>&- || ! systemctl is-active --quiet ephemera.service; then
-  rollback; die 'service failed to become ready; previous installation restored'
+if ! systemctl start ephemera.service 9>&- || ! systemctl is-active --quiet ephemera.service; then
+  die 'service failed to become ready; previous installation restored'
 fi
-rm -rf "$txn"; rm -f "$staged"
+finish_transaction; rm -f "$staged"
 printf 'Ephemera is active: %s\n' "$("$current/ephemera" version)"

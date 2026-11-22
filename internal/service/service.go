@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"os"
 	"sync/atomic"
+	"time"
 
 	"github.com/illusions-lab/Ephemera/internal/backend"
 	"github.com/illusions-lab/Ephemera/internal/config"
+	"github.com/illusions-lab/Ephemera/internal/control"
 	"github.com/illusions-lab/Ephemera/internal/host"
 	"github.com/illusions-lab/Ephemera/internal/orders"
 	"github.com/illusions-lab/Ephemera/internal/status"
@@ -86,7 +88,7 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 	if cfg.Runner.Execute {
 		current.Intake = "executing"
 	}
-	if cfg.Runner.Execute || host.PrivateStatusSocket(opts.StatusSocket) {
+	if cfg.Runner.Execute || opts.StatusSocket != "" {
 		var unlock func()
 		store, unlock, err = openInstances(root)
 		if err != nil {
@@ -159,7 +161,13 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 		if err != nil {
 			return err
 		}
-		updates := newImageUpdates(cfg, root, selected, logger, prepare, opts.ImageChannelFile)
+		var pendingHealth bool
+		var nextHealthAttempt time.Time
+		var managedCache []string
+		if root == host.StateDir() && opts.CacheDir == host.ImageCache() {
+			managedCache = append(managedCache, opts.CacheDir)
+		}
+		updates := newImageUpdates(cfg, root, selected, logger, prepare, opts.ImageChannelFile, managedCache...)
 		return execute(ctx, cfg, orderConfig, selected.Namespace, store, selected.VM, runners, logger, listen, prepareCurrent,
 			func(connected, recovering, stopping bool, update orders.Update, counts status.Instances) error {
 				current.Instances = &counts
@@ -183,11 +191,43 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 					phase = "Reconnecting"
 				}
 				if current.Phase != phase {
-					return report(phase)
+					current.Phase = phase
+					pendingHealth = true
+					nextHealthAttempt = time.Time{}
 				}
 				publish()
+				if !pendingHealth || time.Now().Before(nextHealthAttempt) {
+					return nil
+				}
+				if err := reportHealth(logger, phase, ""); err != nil {
+
+					logger.Warn("Retry service health notification", "phase", phase, "error", err)
+					nextHealthAttempt = time.Now().Add(5 * time.Second)
+					return nil
+				}
+				pendingHealth = false
 				return nil
 			}, updates)
+	}
+	if store != "" && !opts.Claim {
+		closeControl, err := control.Listen(ctx, string(store), func(ctx context.Context, requests <-chan control.Request, replies chan<- control.Snapshot) {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-requests:
+					select {
+					case <-ctx.Done():
+						return
+					case replies <- control.Snapshot{Ready: true}:
+					}
+				}
+			}
+		})
+		if err != nil {
+			return err
+		}
+		defer closeControl()
 	}
 	_, checkImage, err := prepareCurrent()
 	if err != nil {

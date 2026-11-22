@@ -6,13 +6,15 @@ archive=ephemera_linux_$(dpkg --print-architecture).tar.gz
 cleanup() {
   local status=$?
   if (( status != 0 )); then
-    sudo journalctl -u ephemera.service -u ephemera-ci-apply.service -n 100 --no-pager || true
+    sudo journalctl -u ephemera.service -u ephemera-recover.service -u ephemera-ci-apply.service -u ephemera-ci-control.service -n 100 --no-pager || true
     systemctl cat ephemera.service || true
   fi
   if [[ -f "$work/hosts" ]]; then
     sudo systemctl stop ephemera-ci-github.service || true
     sudo cp "$work/hosts" /etc/hosts
   fi
+  sudo systemctl stop ephemera-ci-control.service || true
+  sudo rm -f /var/lib/ephemera/instances/ctl.sock
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -29,6 +31,7 @@ for item in v1 v2 broken; do
 Description=Ephemera installer CI fixture
 [Service]
 Type=oneshot
+ExecCondition=+/opt/ephemera/recover-install --guard-start
 ExecStart=/usr/local/bin/ephemera config validate
 RemainAfterExit=yes
 [Install]
@@ -146,7 +149,69 @@ sudo env CURL_CA_BUNDLE="$CURL_CA_BUNDLE" ephe update
 test "$(grep -c '/download/v0.1.1/' "$work/server.log")" = "$assets"
 test "$(systemctl show -p ActiveEnterTimestampMonotonic --value ephemera.service)" = "$start"
 test "$(ephe version)" = "v0.1.0 $commit"
-sudo ephe update --apply
+# An active old service without a drain socket must keep the candidate staged.
+if { sudo ephe update --apply; } >"$work/no-drain.log" 2>&1; then
+  echo 'upgrade unexpectedly stopped an unverified legacy service' >&2
+  exit 1
+fi
+grep -F 'maintenance window' "$work/no-drain.log"
+test "$(readlink /opt/ephemera/staged)" != "$(readlink /opt/ephemera/current)"
+test "$(systemctl show -p ActiveEnterTimestampMonotonic --value ephemera.service)" = "$start"
+
+# The installer fixture is a oneshot, so a separate local service supplies
+# the drain lease. Its blocking file simulates a job that is still running.
+sudo install -d -m 0700 /var/lib/ephemera/instances
+cat > "$work/control.py" <<'PYTHON'
+import json
+from pathlib import Path
+import socket
+import sys
+
+root = Path(sys.argv[1])
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+    listener.bind("/var/lib/ephemera/instances/ctl.sock")
+    Path("/var/lib/ephemera/instances/ctl.sock").chmod(0o600)
+    listener.listen()
+    while True:
+        connection, _ = listener.accept()
+        with connection, connection.makefile("rb") as requests:
+            for line in requests:
+                request = json.loads(line)
+                assert not request.get("Abort"), request
+                active = (root / "job-running").exists()
+                reply = {"Ready": not active}
+                if active:
+                    reply["Jobs"] = [{
+                        "Instance": "fixture-instance", "Request": 123,
+                        "Repository": "fixture/project", "Name": "Long job",
+                        "Runner": "ephemera-fixture", "Run": 456,
+                    }]
+                try:
+                    connection.sendall(json.dumps(reply).encode() + b"\n")
+                    if active:
+                        (root / "saw-drain").touch()
+                except BrokenPipeError:
+                    break
+PYTHON
+sudo systemd-run --unit=ephemera-ci-control python3 "$work/control.py" "$work"
+for _ in {1..100}; do
+  if sudo test -S /var/lib/ephemera/instances/ctl.sock; then break; fi
+  sleep 0.05
+done
+sudo test -S /var/lib/ephemera/instances/ctl.sock
+touch "$work/job-running"
+{ sudo ephe update --apply; } </dev/null >"$work/drain.log" 2>&1 &
+apply_pid=$!
+for _ in {1..100}; do
+  if [[ -f "$work/saw-drain" ]]; then break; fi
+  sleep 0.05
+done
+test -f "$work/saw-drain"
+test "$(ephe version)" = "v0.1.0 $commit"
+test "$(systemctl show -p ActiveEnterTimestampMonotonic --value ephemera.service)" = "$start"
+rm "$work/job-running"
+wait "$apply_pid"
+grep -F 'repository="fixture/project" run=456 job="Long job"' "$work/drain.log"
 test "$(ephe version)" = "v0.1.1 $commit"
 sudo bash scripts/install.sh --bundle "$work/broken"
 if sudo ephe update --apply; then echo 'broken update unexpectedly succeeded' >&2; exit 1; fi
@@ -154,28 +219,63 @@ test "$(ephe version)" = "v0.1.1 $commit"
 systemctl is-active --quiet ephemera.service
 test "$before" = "$(sudo sha256sum /etc/ephemera/config.yaml /etc/ephemera/credentials/github-app.pem)"
 
-# Leave a real interrupted transaction after systemd begins starting the candidate.
+# Inject both a catchable interruption and a hard kill during activation.
 cp -a "$work/broken" "$work/interrupted"
 sed -i 's|ExecStart=/bin/false|ExecStart=/bin/sleep 60\nTimeoutStartSec=2s|' "$work/interrupted/ephemera.service"
 sudo bash scripts/install.sh --bundle "$work/interrupted"
-sudo systemd-run --unit=ephemera-ci-apply --property=Type=exec \
-  /opt/ephemera/current/install.sh --update --apply
-interrupted=false
+interrupt_install() {
+  local signal=$1 wrapper=$2
+  sudo systemd-run --unit="$wrapper" --property=Type=exec \
+    /opt/ephemera/current/install.sh --update --apply
+  for _ in {1..100}; do
+    if [[ "$(systemctl show -p ActiveState --value ephemera.service)" == activating ]] &&
+       sudo test -f /opt/ephemera/transaction/switching; then
+      sudo systemctl kill --signal="$signal" "$wrapper"
+      for _ in {1..100}; do
+        case "$(systemctl show -p ActiveState --value "$wrapper")" in
+          failed|inactive) return 0 ;;
+        esac
+        sleep 0.05
+      done
+      echo "interrupted installer did not exit ($signal)" >&2
+      return 1
+    fi
+    sleep 0.05
+  done
+  echo "candidate did not reach the interruptible activation phase ($signal)" >&2
+  return 1
+}
+assert_recovered() {
+  test "$(ephe version)" = "v0.1.1 $commit" || return
+  systemctl is-active --quiet ephemera.service || return
+  sudo test ! -e /opt/ephemera/transaction || return
+  cmp "$work/v2/ephemera.service" /etc/systemd/system/ephemera.service
+}
+
+interrupt_install TERM ephemera-ci-apply-term
 for _ in {1..100}; do
-  if [[ "$(systemctl show -p ActiveState --value ephemera.service)" == activating ]] &&
-     sudo test -d /opt/ephemera/transaction; then
-    sudo systemctl kill --signal=KILL ephemera-ci-apply.service
-    interrupted=true
-    break
-  fi
+  if assert_recovered; then break; fi
   sleep 0.05
 done
-"$interrupted"
-# Staging an offline bundle forces recovery without applying the candidate again.
+assert_recovered
+
+interrupt_install KILL ephemera-ci-apply
+sudo test -d /opt/ephemera/transaction
+# Recover through the independent unit without running the installer again.
+sudo systemctl start ephemera-recover.service
+assert_recovered
+sudo systemctl start ephemera-recover.service
+assert_recovered
+
+interrupt_install KILL ephemera-ci-apply-boot
+sudo systemctl stop ephemera.service
+# Change the saved boot ID to exercise early boot recovery on this host.
+echo previous-boot | sudo tee /opt/ephemera/transaction/boot-id >/dev/null
+sudo systemctl daemon-reload
+sudo systemctl start ephemera-recover-boot.service ephemera.service
+assert_recovered
+
 sudo bash scripts/install.sh --bundle "$work/v1"
-test "$(ephe version)" = "v0.1.1 $commit"
-systemctl is-active --quiet ephemera.service
-sudo test ! -e /opt/ephemera/transaction
 sudo ephe update --apply
 test "$(ephe version)" = "v0.1.0 $commit"
 

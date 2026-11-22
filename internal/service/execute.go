@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/illusions-lab/Ephemera/internal/config"
+	"github.com/illusions-lab/Ephemera/internal/control"
 	"github.com/illusions-lab/Ephemera/internal/orders"
 	"github.com/illusions-lab/Ephemera/internal/status"
 	"github.com/illusions-lab/Ephemera/internal/vm"
@@ -39,11 +40,32 @@ func execute(ctx context.Context, cfg config.Config, github orders.Config, names
 	if len(updates) > 0 {
 		r.images = updates[0]
 	}
-	listenCtx, stop := context.WithCancel(ctx)
+	listenCtx, stop := context.WithCancel(context.WithoutCancel(ctx))
 	defer stop()
 	var capacity atomic.Int64
+	if github.Owner != "" {
+		disk := uint64(max(12, cfg.VM.DiskGiB)) * gib
+		root := string(store)
+		if cfg.VM.Backend == "tart" {
+			disk = 12 * gib
+			root = namespace
+		}
+		r.budget = &resourceBudget{root: root, memory: uint64(cfg.VM.MemoryMiB) << 20, disk: disk, sample: sampleResources}
+		closeControl, err := control.Listen(listenCtx, string(store), r.serveDrain)
+		if err != nil {
+			return err
+		}
+		defer closeControl()
+	}
+	github.BeginAcquire = func() (func(), bool) {
+		if ctx.Err() != nil || capacity.Load() == 0 || r.imageBlocked.Load() {
+			return nil, false
+		}
+		return r.gate.begin()
+	}
 	github.Capacity = func() int {
-		if listenCtx.Err() != nil {
+		closed, _ := r.gate.state()
+		if closed || ctx.Err() != nil || listenCtx.Err() != nil {
 			return 0
 		}
 		return int(capacity.Load())
@@ -52,7 +74,7 @@ func execute(ctx context.Context, cfg config.Config, github orders.Config, names
 		capacity.Store(0)
 		_ = r.submit(listenCtx, runnerEvent{kind: disconnected})
 	}
-	var done, updateDone chan struct{}
+	var done, updateDone, repairDone chan struct{}
 	err = r.run(ctx, restored, func() error {
 		imageID, checkImage, err := prepare()
 		active := preparedImage{id: imageID, check: checkImage}
@@ -66,16 +88,37 @@ func execute(ctx context.Context, cfg config.Config, github orders.Config, names
 			logger.Warn("Use recovered runner image after bundled image preparation failed", "error", err)
 		}
 		r.setImage(active)
-		github.CheckImage = func() error {
-			active := r.active.Load()
-			if active.check != nil {
-				err := active.check()
-				if err != nil && active.recipe != nil {
-					_ = r.send(listenCtx, runnerEvent{kind: imageUnavailable, image: *active, stage: "check base image", err: err})
+		if r.images != nil && r.images.state.Failures > 0 {
+			state := r.images.state
+			if state.FailureImage != "" && state.FailureImage != active.id {
+				state.Failures, state.FailureImage = 0, ""
+				if err := r.images.save(state); err != nil {
+					logger.Error("Reset failures for a different base image", "error", err)
 				}
-				return err
+			} else if state.Failures >= 3 {
+				r.blockFailedImage()
 			}
-			return nil
+		}
+		github.CheckImage = func() error {
+			if r.imageBlocked.Load() {
+				return errors.New("runner image is unavailable")
+			}
+			active := r.active.Load()
+			if active.check == nil {
+				return nil
+			}
+			err := active.check()
+			if err != nil {
+				_ = r.submit(listenCtx, runnerEvent{kind: imageUnavailable, source: active})
+			}
+			return err
+		}
+		if r.images != nil && r.images.rebuild != nil {
+			repairDone = make(chan struct{})
+			go func() {
+				defer close(repairDone)
+				r.monitorImage(listenCtx, r.images.rebuild)
+			}()
 		}
 		if r.images != nil && r.images.enabled {
 			updateDone = make(chan struct{})
@@ -93,6 +136,9 @@ func execute(ctx context.Context, cfg config.Config, github orders.Config, names
 		return err
 	}
 	stop()
+	if repairDone != nil {
+		<-repairDone
+	}
 	if updateDone != nil {
 		<-updateDone
 	}
@@ -107,12 +153,13 @@ func execute(ctx context.Context, cfg config.Config, github orders.Config, names
 
 func listenForExecution(ctx context.Context, cfg orders.Config, logger *slog.Logger, listen listenFunc, r *reconciler) {
 	failures := 0
+	cfg.Acquisitions = &orders.Acquisitions{}
+	cfg.Polled = func() { failures = 0 }
 	for ctx.Err() == nil {
 		err := listen(ctx, cfg, logger, func(ctx context.Context, update orders.Update) error {
 			if update.ScaleSetID <= 0 {
 				return errors.New("GitHub returned an invalid Scale Set ID")
 			}
-			failures = 0
 			return r.submit(ctx, runnerEvent{kind: statistics, update: update})
 		})
 		cfg.Disconnected()

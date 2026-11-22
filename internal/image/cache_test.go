@@ -50,8 +50,12 @@ func TestCachePublishesOnlySuccessfulBuildAndChecksReuse(t *testing.T) {
 	if err := image.Check(); err == nil {
 		t.Fatal("expected runtime check to detect a modified disk")
 	}
-	if _, err := c.prepare(ctx, "image", build); err == nil || !strings.Contains(err.Error(), "SHA-256 mismatch") {
-		t.Fatalf("cache should reject corrupted disk, got %v", err)
+	repaired, err := c.prepare(ctx, "image", build)
+	if err != nil || repaired.Path == image.Path || builds != 3 {
+		t.Fatalf("expected a new backing path after corruption: %v, builds = %d, error = %v", repaired.Path, builds, err)
+	}
+	if reused, err := c.prepare(ctx, "image", build); err != nil || reused.Path != repaired.Path || builds != 3 {
+		t.Fatalf("expected reuse of the repaired image: %v, builds = %d, error = %v", reused.Path, builds, err)
 	}
 }
 

@@ -146,6 +146,15 @@ func printStatus(w io.Writer, report statusReport) {
 	if i := s.Instances; i != nil {
 		fmt.Fprintf(w, "%-13s %d starting · %d waiting · %d running · %d pending cleanup\n",
 			"VM instances", i.Starting, i.Waiting, i.Running, i.Reclaiming)
+		if i.Draining {
+			fmt.Fprintln(w, "Service is draining")
+		}
+		if i.CapacityReason != "" {
+			fmt.Fprintf(w, "Capacity limited: %s\n", i.CapacityReason)
+		}
+		if i.PendingDeregistration > 0 {
+			fmt.Fprintf(w, "Pending GitHub deregistration: %d\n", i.PendingDeregistration)
+		}
 	}
 	if s.MaxConcurrent > 0 {
 		fmt.Fprintf(w, "%-13s %d configured concurrent runners\n", "Capacity", s.MaxConcurrent)

@@ -2,12 +2,16 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/illusions-lab/Ephemera/internal/host"
+	"github.com/illusions-lab/Ephemera/internal/orders"
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/charmbracelet/x/term"
 	"github.com/illusions-lab/Ephemera/internal/cli/setup"
@@ -18,6 +22,7 @@ import (
 func runSetup(args []string) error {
 	flags := flag.NewFlagSet("setup", flag.ContinueOnError)
 	nonInteractive := flags.Bool("non-interactive", false, "read configuration and key from files")
+	recoverKey := flags.Bool("recover-residual-key", false, "replace a verified residual key after an incomplete first install")
 	resume := flags.Bool("resume", false, "verify existing configuration and key for an installation retry")
 	source := flags.String("config", "", "source YAML configuration")
 	keyPath := flags.String("github-app-key", "", "source GitHub App PEM file")
@@ -32,6 +37,9 @@ func runSetup(args []string) error {
 	}
 	if flags.NArg() != 0 {
 		return errors.New("unexpected arguments to setup")
+	}
+	if *recoverKey && (!*nonInteractive || *resume || runtime.GOOS != "linux") {
+		return errors.New("--recover-residual-key requires a non-interactive Linux first install")
 	}
 	if *resume && !*nonInteractive {
 		return errors.New("--resume requires --non-interactive")
@@ -76,7 +84,13 @@ func runSetup(args []string) error {
 		}
 		return setup.Run(destination, *appName, *existingApp)
 	}
-	if err := setupFromFiles(config.Dir, *source, *keyPath, *resume); err != nil {
+	var err error
+	if *recoverKey {
+		err = recoverSetupKey(config.Dir, *source, *keyPath)
+	} else {
+		err = setupFromFiles(config.Dir, *source, *keyPath, *resume)
+	}
+	if err != nil {
 		return err
 	}
 	if *resume {
@@ -85,6 +99,41 @@ func runSetup(args []string) error {
 		fmt.Println("Configuration saved to", destination)
 	}
 	return nil
+}
+
+func recoverSetupKey(dir, source, keyPath string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if host.QueryService(ctx).State != "not-installed" {
+		return errors.New("residual key recovery requires an uninstalled service")
+	}
+	for _, path := range []string{"/etc/systemd/system/ephemera.service", "/opt/ephemera/current"} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("residual key recovery requires %s to be absent", path)
+		}
+	}
+	cfg, err := config.Load(source)
+	if err != nil {
+		return err
+	}
+	key, err := config.ReadKey(keyPath)
+	if err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	return config.RecoverSetupKey(dir, data, key, func() error {
+		_, err := orders.ProbeScaleSet(ctx, orders.Config{
+			ScopeURL: cfg.GitHub.ScopeURL, ScaleSetName: cfg.GitHub.ScaleSetName,
+			AppID: cfg.GitHub.AppID, InstallationID: cfg.GitHub.InstallationID, PrivateKey: key,
+		})
+		if err != nil {
+			return fmt.Errorf("validate replacement GitHub App key: %w", err)
+		}
+		return nil
+	})
 }
 
 func setupFromFiles(dir, source, keyPath string, resume bool) error {

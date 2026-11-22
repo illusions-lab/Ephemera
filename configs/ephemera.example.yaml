@@ -24,6 +24,7 @@ vm:
   arch: amd64
   vcpus: 2
   memory_mib: 4096
+  # disk_gib: 12  # Ubuntu QEMU guest disk capacity
 
 # The built-in Ubuntu amd64 recipe uses pinned upstream releases.
 # To select different sources, add:
