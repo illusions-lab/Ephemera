@@ -53,7 +53,7 @@ func runService(args []string) error {
 	}
 	if exec.CommandContext(ctx, "launchctl", "print", target).Run() == nil {
 		if err := control.Drain(ctx, host.StateDir(), os.Stdin, os.Stderr, func() error {
-			return invoke("launchctl", "bootout", target)
+			return macos.UnloadService(ctx, domain)
 		}); err != nil {
 			return err
 		}
