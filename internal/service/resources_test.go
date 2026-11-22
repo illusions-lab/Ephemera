@@ -45,6 +45,22 @@ func TestResourceBudgetReservesHostAndStartingCapacity(t *testing.T) {
 	}
 }
 
+func TestResourceBudgetUsesConfiguredHostReserve(t *testing.T) {
+	budget := &resourceBudget{
+		memory: 4 * gib, disk: 20 * gib, memoryReserve: 384 << 20,
+		sample: func(context.Context, string) (uint64, uint64, error) {
+			return 4*gib + 400<<20, 25 * gib, nil
+		},
+	}
+	now := time.Now()
+	if slots, reason := budget.slots(t.Context(), now, 0, 1); slots != 1 || reason != "" {
+		t.Fatalf("expected one VM slot, got %d (%s)", slots, reason)
+	}
+	if slots, reason := budget.slots(t.Context(), now, 1, 1); slots != 0 || !strings.Contains(reason, "384 MiB") {
+		t.Fatalf("expected pending VM to occupy the only slot, got %d (%s)", slots, reason)
+	}
+}
+
 func TestResourceExhaustionLeavesReadyRunnerEligible(t *testing.T) {
 	now := time.Now()
 	r := &reconciler{

@@ -71,6 +71,11 @@ and the guest OS and architecture labels. Set your workflow's `runs-on` to
 the Scale Set name shown by `ephe status` to target that specific set.
 If `github.labels` is absent, Ephemera preserves existing extra labels.
 If it is present, it defines the extra labels, and an empty list removes them.
+The scheduler reserves 1024 MiB of available host memory by default. To adjust
+that threshold, set `vm.host_reserve_mib` in **VM and images** under `ephe config`,
+then run `ephe config apply`. The minimum is 256 MiB. Reduce the reserve only
+if the host can run the configured VM and its workloads with that headroom.
+
 Changing the runner group selects or creates a Scale Set in the new group.
 
 ```yaml

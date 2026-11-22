@@ -84,6 +84,7 @@ func Listen(ctx context.Context, cfg Config, logger *slog.Logger, handle func(co
 	if err != nil {
 		return err
 	}
+	reportScaleSetLabels(logger, cfg, set)
 	info.ScaleSetID = set.ID
 	client.SetSystemInfo(info)
 
@@ -113,7 +114,7 @@ func Listen(ctx context.Context, cfg Config, logger *slog.Logger, handle func(co
 			logger.Warn("Could not close Scale Set session", "scale_set_id", set.ID, "error", err)
 		}
 	}()
-	logger.Info("Listening for GitHub jobs", "scale_set", set.Name, "scale_set_id", set.ID, "claim", cfg.Claim)
+	logger.Info("Listening for GitHub jobs", "scale_set", set.Name, "scale_set_id", set.ID, "intake_enabled", cfg.Claim || cfg.Capacity != nil)
 	group := set.RunnerGroupName
 	if group == "" {
 		group = cfg.RunnerGroup
@@ -264,6 +265,19 @@ func findScaleSet(ctx context.Context, client scaleSets, cfg Config) (*scaleset.
 		return nil, fmt.Errorf("create Scale Set %q: %w", name, err)
 	}
 	return set, nil
+}
+
+func reportScaleSetLabels(logger *slog.Logger, cfg Config, set *scaleset.RunnerScaleSet) {
+	desired := append([]string{cfg.ScaleSetName}, cfg.Labels...)
+	if _, missing := scaleSetLabels(desired, set.Labels, false); missing {
+		var effective []string
+		for _, label := range set.Labels {
+			effective = append(effective, label.Name)
+		}
+		logger.Warn("GitHub did not return all requested Scale Set labels",
+			"scale_set", set.Name, "scale_set_id", set.ID,
+			"requested_labels", desired, "effective_labels", effective)
+	}
 }
 
 func scaleSetLabels(desired []string, current []scaleset.Label, replace bool) ([]scaleset.Label, bool) {

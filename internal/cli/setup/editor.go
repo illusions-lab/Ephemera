@@ -222,6 +222,7 @@ func editVM(cfg *config.Config) error {
 	vm := cfg.VM
 	cpus, memory := strconv.Itoa(vm.VCPUs), strconv.Itoa(vm.MemoryMiB)
 	disk := strconv.Itoa(vm.DiskGiB)
+	reserve := strconv.Itoa(vm.HostReserveMiB)
 	auto := "default"
 	if cfg.Runner.ImageAutoUpdate != nil {
 		auto = strconv.FormatBool(*cfg.Runner.ImageAutoUpdate)
@@ -229,6 +230,12 @@ func editVM(cfg *config.Config) error {
 	fields := []huh.Field{
 		huh.NewInput().Title("VM CPU count").Value(&cpus).Validate(intRange(1, math.MaxInt)),
 		huh.NewInput().Title("VM memory (MiB)").Value(&memory).Validate(intRange(1, math.MaxInt)),
+		huh.NewInput().Title("Host memory reserve (MiB, 0 uses 1024)").Value(&reserve).Validate(func(value string) error {
+			if strings.TrimSpace(value) == "0" {
+				return nil
+			}
+			return intRange(256, math.MaxInt32)(value)
+		}),
 		huh.NewSelect[string]().Title("Automatic runner image updates").Options(
 			huh.NewOption("Use default (enabled for new installations)", "default"), huh.NewOption("Enabled", "true"), huh.NewOption("Disabled", "false"),
 		).Value(&auto),
@@ -253,6 +260,7 @@ func editVM(cfg *config.Config) error {
 	}
 	vm.VCPUs, _ = strconv.Atoi(strings.TrimSpace(cpus))
 	vm.MemoryMiB, _ = strconv.Atoi(strings.TrimSpace(memory))
+	vm.HostReserveMiB, _ = strconv.Atoi(strings.TrimSpace(reserve))
 	vm.DiskGiB, _ = strconv.Atoi(strings.TrimSpace(disk))
 	vm.Image, vm.Arch = strings.TrimSpace(vm.Image), strings.TrimSpace(vm.Arch)
 	vm.ImageRef, vm.Profile = strings.TrimSpace(vm.ImageRef), strings.TrimSpace(vm.Profile)

@@ -50,7 +50,7 @@ func execute(ctx context.Context, cfg config.Config, github orders.Config, names
 			disk = 12 * gib
 			root = namespace
 		}
-		r.budget = &resourceBudget{root: root, memory: uint64(cfg.VM.MemoryMiB) << 20, disk: disk, sample: sampleResources}
+		r.budget = &resourceBudget{root: root, memory: uint64(cfg.VM.MemoryMiB) << 20, disk: disk, memoryReserve: uint64(cfg.VM.HostReserveMiB) << 20, sample: sampleResources}
 		closeControl, err := control.Listen(listenCtx, string(store), r.serveDrain)
 		if err != nil {
 			return err
