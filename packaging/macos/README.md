@@ -40,6 +40,12 @@ wait for current jobs without a terminal.
 Use `ephe doctor`, `ephe status`, and
 `tail -F "$HOME/Library/Logs/Ephemera/daemon.log"` to inspect the service.
 
+Run `ephe doctor --repair` to recover an interrupted activation and apply the
+saved configuration. This waits for active jobs before restarting the service.
+During a restart or upgrade, Ephemera retries a GitHub Scale Set session
+conflict while the previous session closes. Check `ephe doctor` for the
+resulting connection and intake mode.
+
 Rerun the installer to upgrade, or pass `--version TAG` to select a specific
 release. Installation and direct `ephe setup` use the same activation
 transaction. The active LaunchAgent reads the YAML and PEM from its private

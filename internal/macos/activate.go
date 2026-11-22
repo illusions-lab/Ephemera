@@ -49,7 +49,7 @@ func Activate(ctx context.Context, release string, prepare func() (*Candidate, e
 		plist:   filepath.Join(home, "Library", "LaunchAgents", Label+".plist"),
 		domain:  fmt.Sprintf("gui/%d", os.Getuid()),
 		logFile: filepath.Join(home, "Library", "Logs", "Ephemera", "daemon.log"),
-		wait:    45 * time.Second,
+		wait:    2 * time.Minute,
 	}
 	return a.run(ctx, release, prepare)
 }

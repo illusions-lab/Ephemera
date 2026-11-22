@@ -263,3 +263,24 @@ func TestExecutionPollLeavesAmbiguousAcquisitionUnacknowledged(t *testing.T) {
 		t.Fatalf("poll error = %v, acknowledgments = %v", err, s.calls)
 	}
 }
+
+func TestAwaitSessionHandoffRetriesOnlyOwnerConflict(t *testing.T) {
+	ownerConflict := errors.New("409 Conflict: RunnerScaleSetSessionConflictException")
+	for _, firstError := range []error{ownerConflict, errors.New("409 Conflict: unrelated conflict")} {
+		attempts, notices := 0, 0
+		err := awaitSessionHandoff(t.Context(), 0, func(context.Context) error {
+			attempts++
+			if attempts < 3 {
+				return firstError
+			}
+			return nil
+		}, func() { notices++ })
+		if firstError == ownerConflict {
+			if err != nil || attempts != 3 || notices != 1 {
+				t.Fatalf("handoff: %v, %d attempts, %d notices", err, attempts, notices)
+			}
+		} else if !errors.Is(err, firstError) || attempts != 1 || notices != 0 {
+			t.Fatalf("unexpected conflict retry: %v, %d attempts, %d notices", err, attempts, notices)
+		}
+	}
+}

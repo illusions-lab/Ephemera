@@ -93,7 +93,16 @@ func Listen(ctx context.Context, cfg Config, logger *slog.Logger, handle func(co
 		// acquisition must return to the caller to rebuild the session.
 		options = append(options, scaleset.WithRetryMax(-1))
 	}
-	s, err := client.MessageSessionClient(ctx, set.ID, cfg.Owner, options...)
+	var s *scaleset.MessageSessionClient
+	openCtx, cancelOpen := context.WithTimeout(ctx, 90*time.Second)
+	err = awaitSessionHandoff(openCtx, 3*time.Second, func(ctx context.Context) error {
+		var err error
+		s, err = client.MessageSessionClient(ctx, set.ID, cfg.Owner, options...)
+		return err
+	}, func() {
+		logger.Info("Waiting for the previous GitHub Scale Set session to close", "scale_set_id", set.ID)
+	})
+	cancelOpen()
 	if err != nil {
 		return fmt.Errorf("open Scale Set session: %w", err)
 	}
@@ -158,6 +167,28 @@ func newGitHubClient(cfg Config, info scaleset.SystemInfo, options ...scaleset.H
 }
 
 const defaultGroupID = 1
+
+// A replacement daemon can start before GitHub releases the old owner's lease.
+func awaitSessionHandoff(ctx context.Context, delay time.Duration, open func(context.Context) error, waiting func()) error {
+	reported := false
+	for {
+		err := open(ctx)
+		if err == nil || !strings.Contains(err.Error(), "409 Conflict") || !strings.Contains(err.Error(), "RunnerScaleSetSessionConflictException") {
+			return err
+		}
+		if !reported {
+			waiting()
+			reported = true
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return errors.Join(ctx.Err(), err)
+		case <-timer.C:
+		}
+	}
+}
 
 func lookupScaleSet(ctx context.Context, client scaleSets, cfg Config) (*scaleset.RunnerScaleSet, error) {
 	groupID, err := runnerGroupID(ctx, client, cfg.RunnerGroup)

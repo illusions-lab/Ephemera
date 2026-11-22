@@ -45,6 +45,7 @@ func runDoctor(args []string) error {
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	path := flags.String("config", host.ConfigPath(), "configuration file")
 	keyPath := flags.String("github-app-key", host.KeyPath(), "GitHub App PEM file")
+	repair := flags.Bool("repair", false, "recover and apply the saved macOS service configuration")
 	cacheDir := flags.String("image-cache", host.ImageCache(), "runner image cache directory")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -58,6 +59,17 @@ func runDoctor(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if *repair {
+		if runtime.GOOS != "darwin" {
+			return errors.New("use sudo ephe config apply to repair the Linux service")
+		}
+		if *path != host.ConfigPath() || *keyPath != host.KeyPath() || *cacheDir != host.ImageCache() {
+			return errors.New("doctor --repair uses the installed configuration and credential paths")
+		}
+		if err := applyMacConfig(ctx, true); err != nil {
+			return err
+		}
+	}
 	if runtime.GOOS == "darwin" {
 		return diagnoseMac(ctx, *path, *keyPath)
 	}
@@ -217,6 +229,11 @@ func linuxHostArch() string {
 }
 
 func diagnoseMac(ctx context.Context, configPath, keyPath string) error {
+	if pending, err := macos.ActivationPending(); err != nil {
+		return err
+	} else if pending {
+		return errors.New("an interrupted LaunchAgent activation is pending; run ephe setup or ephe doctor --repair")
+	}
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
@@ -228,11 +245,13 @@ func diagnoseMac(ctx context.Context, configPath, keyPath string) error {
 		return fmt.Errorf("read GitHub App key: %w", err)
 	}
 	fmt.Println("Configuration and GitHub App key are readable.")
-	ref, err := backend.CheckImage(ctx, cfg, host.StateDir(), host.ImageCache())
-	if err != nil {
-		return fmt.Errorf("check runner image cache: %w", err)
+	if cfg.Runner.Execute {
+		ref, err := backend.CheckImage(ctx, cfg, host.StateDir(), host.ImageCache())
+		if err != nil {
+			return fmt.Errorf("check runner image cache: %w; run ephe setup or ephe doctor --repair", err)
+		}
+		fmt.Printf("Tart %s image cache contains %s.\n", macos.TartVersion, ref)
 	}
-	fmt.Printf("Tart %s image cache contains %s.\n", macos.TartVersion, ref)
 	free, path, err := availableDisk(macos.Root())
 	if err != nil {
 		return err
@@ -240,11 +259,14 @@ func diagnoseMac(ctx context.Context, configPath, keyPath string) error {
 	fmt.Printf("%.1f GiB available on %s.\n", float64(free)/(1<<30), path)
 	current, err := status.Read(ctx, host.StatusSocket())
 	if err != nil {
-		return fmt.Errorf("read LaunchAgent status: %w", err)
+		return fmt.Errorf("read LaunchAgent status: %w; run ephe setup or ephe doctor --repair", err)
 	}
 	fmt.Printf("Ephemera %s, GitHub %s, intake %s.\n", current.Phase, current.GitHub, current.Intake)
 	if current.GitHub != "connected" {
-		return errors.New("Ephemera is not connected to GitHub")
+		return errors.New("Ephemera is not connected to GitHub; check the daemon log and run ephe setup or ephe doctor --repair")
+	}
+	if current.Intake == "observing" {
+		fmt.Println("Observation mode. To accept jobs, select Execute jobs in ephe config, then run ephe setup.")
 	}
 	return nil
 }
