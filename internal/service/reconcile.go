@@ -35,6 +35,7 @@ type instanceState struct {
 	job                 control.Job
 	phase               runnerPhase
 	deadline            time.Time
+	createdAt           time.Time
 	cancel              context.CancelFunc
 	inFlight, launching bool
 	recovered           bool
@@ -98,6 +99,7 @@ type reconciler struct {
 	retryStart                  time.Time
 	startFailures               int
 	update                      orders.Update
+	reportRows                  func([]status.Instance)
 	report                      func(bool, bool, bool, orders.Update, status.Instances) error
 }
 
@@ -161,6 +163,9 @@ func (r *reconciler) run(ctx context.Context, restored []vm.Instance, afterRecov
 		free, counts := r.reconcile(workers, time.Now())
 		if ctx.Err() != nil {
 			free = 0
+		}
+		if r.reportRows != nil {
+			r.reportRows(r.instanceRows())
 		}
 		if err := r.report(r.connected, recovering, r.draining, r.update, counts); err != nil && reportErr == nil {
 			reportErr = err
@@ -420,7 +425,7 @@ func (r *reconciler) reconcile(ctx context.Context, now time.Time) (int, status.
 			i := r.template
 			i.ID, i.Resource = id.String(), runnerName(id.String())
 			startCtx, cancel := context.WithTimeout(ctx, r.startupTimeout)
-			r.instances[i.ID] = &instanceState{Instance: i, phase: starting, launching: true, cancel: cancel, deadline: now.Add(r.startupTimeout)}
+			r.instances[i.ID] = &instanceState{Instance: i, phase: starting, createdAt: now, launching: true, cancel: cancel, deadline: now.Add(r.startupTimeout)}
 			r.gate.mu.Unlock()
 			go r.launch(ctx, startCtx, i, r.active.Load())
 			local++
@@ -455,6 +460,29 @@ func (r *reconciler) reconcile(ctx context.Context, now time.Time) (int, status.
 		r.pruneImages()
 	}
 	return free, counts
+}
+
+func (r *reconciler) instanceRows() []status.Instance {
+	rows := make([]status.Instance, 0, len(r.instances))
+	for _, instance := range r.instances {
+		state := "pending-deregistration"
+		if !instance.LocalReclaimed {
+			switch instance.phase {
+			case starting:
+				state = "starting"
+			case waiting:
+				state = "waiting"
+			case running:
+				state = "running"
+			case finishing:
+				state = "finishing"
+			case reclaiming:
+				state = "reclaiming"
+			}
+		}
+		rows = append(rows, status.Instance{ID: instance.ID, Runner: instance.Resource, State: state, CreatedAt: instance.createdAt})
+	}
+	return rows
 }
 
 func (r *reconciler) launch(ctx, startup context.Context, i vm.Instance, image *preparedImage) {

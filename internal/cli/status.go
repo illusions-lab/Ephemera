@@ -9,9 +9,11 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/illusions-lab/Ephemera/internal/config"
 	"github.com/illusions-lab/Ephemera/internal/host"
 	runtimeStatus "github.com/illusions-lab/Ephemera/internal/status"
 )
@@ -19,7 +21,24 @@ import (
 type statusReport struct {
 	Service           host.ServiceStatus      `json:"service"`
 	Daemon            *runtimeStatus.Snapshot `json:"daemon"`
+	Configuration     configState             `json:"configuration"`
 	DaemonUnavailable string                  `json:"daemon_unavailable,omitempty"`
+}
+
+type configState struct {
+	State  string `json:"state"`
+	Detail string `json:"detail,omitempty"`
+}
+
+func (s configState) description() string {
+	switch s.State {
+	case "applied":
+		return "Applied"
+	case "pending":
+		return "Unapplied changes"
+	default:
+		return "Unknown (" + s.Detail + ")"
+	}
 }
 
 func runStatus(args []string) error {
@@ -27,6 +46,7 @@ func runStatus(args []string) error {
 	jsonOutput := flags.Bool("json", false, "write JSON, one object per update in watch mode")
 	watch := flags.Bool("watch", false, "refresh every two seconds")
 	socket := flags.String("socket", host.StatusSocket(), "daemon status socket")
+	path := flags.String("config", "", "saved configuration to compare with the daemon")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -34,7 +54,7 @@ func runStatus(args []string) error {
 		return err
 	}
 	if flags.NArg() != 0 || *socket == "" {
-		return errors.New("usage: ephe status [--watch] [--json] [--socket PATH]")
+		return errors.New("usage: ephe status [--watch] [--json] [--socket PATH] [--config PATH]")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -45,7 +65,7 @@ func runStatus(args []string) error {
 		ticks = ticker.C
 	}
 	return streamStatus(ctx, os.Stdout, *jsonOutput, ticks, func(ctx context.Context) statusReport {
-		return collectStatus(ctx, *socket)
+		return collectStatus(ctx, *socket, *path)
 	})
 }
 
@@ -84,7 +104,7 @@ func streamStatus(ctx context.Context, output io.Writer, jsonOutput bool, ticks 
 	return nil
 }
 
-func collectStatus(ctx context.Context, socket string) statusReport {
+func collectStatus(ctx context.Context, socket string, paths ...string) statusReport {
 	report := statusReport{Service: host.QueryService(ctx)}
 	snapshot, err := runtimeStatus.Read(ctx, socket)
 	switch {
@@ -97,7 +117,43 @@ func collectStatus(ctx context.Context, socket string) statusReport {
 	default:
 		report.Daemon = &snapshot
 	}
+	path := ""
+	if len(paths) != 0 {
+		path = paths[0]
+	}
+	if path == "" && socket == host.StatusSocket() {
+		path = host.ConfigPath()
+	}
+	report.Configuration = compareConfiguration(path, report.Daemon)
 	return report
+}
+
+func compareConfiguration(path string, daemon *runtimeStatus.Snapshot) configState {
+	switch {
+	case daemon == nil:
+		return configState{"unknown", "daemon is unavailable"}
+	case daemon.ConfigDigest == "":
+		return configState{"unknown", "daemon does not report its configuration"}
+	case path == "":
+		return configState{"unknown", "specify --config for a custom socket"}
+	}
+	cfg, err := config.Load(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return configState{"unknown", "saved configuration is missing"}
+	case errors.Is(err, os.ErrPermission):
+		return configState{"unknown", "saved configuration cannot be read"}
+	case err != nil:
+		return configState{"unknown", "saved configuration is invalid or unreadable"}
+	}
+	digest, err := config.Digest(cfg)
+	if err != nil {
+		return configState{"unknown", "saved configuration cannot be compared"}
+	}
+	if digest == daemon.ConfigDigest {
+		return configState{State: "applied"}
+	}
+	return configState{State: "pending"}
 }
 
 func printStatus(w io.Writer, report statusReport) {
@@ -109,6 +165,9 @@ func printStatus(w io.Writer, report statusReport) {
 		fmt.Fprintf(w, " · %s", report.Service.Result)
 	}
 	fmt.Fprintln(w)
+	if report.Configuration.State != "" {
+		fmt.Fprintf(w, "%-13s %s\n", "Configuration", report.Configuration.description())
+	}
 	if report.Daemon == nil {
 		fmt.Fprintf(w, "%-13s unavailable (%s)\n", "Daemon", report.DaemonUnavailable)
 		if report.Service.Message != "" {
@@ -126,6 +185,16 @@ func printStatus(w io.Writer, report statusReport) {
 	if s.Scope != "" {
 		fmt.Fprintf(w, "%-13s %s\n", "Target", s.Scope)
 		fmt.Fprintf(w, "%-13s %q\n", "Scale Set", s.ScaleSet)
+	}
+	if s.RunnerGroup != "" {
+		fmt.Fprintf(w, "%-13s %s\n", "Runner group", s.RunnerGroup)
+	}
+	if s.Labels != nil {
+		labels := "(none)"
+		if len(*s.Labels) > 0 {
+			labels = strings.Join(*s.Labels, ", ")
+		}
+		fmt.Fprintf(w, "%-13s %s\n", "Labels", labels)
 	}
 	fmt.Fprintf(w, "%-13s %s\n", "Job intake", s.Intake)
 	if update := s.ImageUpdate; update != nil {

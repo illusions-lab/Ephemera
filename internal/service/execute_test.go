@@ -80,7 +80,7 @@ func TestExecutionPreparesImageAfterRecovery(t *testing.T) {
 					}
 					recovered = recovered || (recovering && counts.Reclaiming == 1)
 					return nil
-				})
+				}, nil)
 			if !errors.Is(err, test.imageErr) || !recovered || (test.imageErr == nil && !healthy.Load()) {
 				t.Fatalf("execute = %v, recovery reported = %t, healthy = %t", err, recovered, healthy.Load())
 			}

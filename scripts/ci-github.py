@@ -68,6 +68,13 @@ class Handler(BaseHTTPRequestHandler):
                     return
         self.reply(404)
 
+    def do_PATCH(self):
+        path = urlsplit(self.path).path.rstrip("/")
+        payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+        if path.endswith("/runnerscalesets/1"):
+            return self.reply(200, {"id": 1, "labels": payload["labels"]})
+        self.reply(404)
+
     def do_DELETE(self):
         self.reply(204)
 

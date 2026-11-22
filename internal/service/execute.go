@@ -19,7 +19,7 @@ type listenFunc func(context.Context, orders.Config, *slog.Logger, func(context.
 func execute(ctx context.Context, cfg config.Config, github orders.Config, namespace string, store instanceStore,
 	backend vm.Backend, runners registry, logger *slog.Logger, listen listenFunc,
 	prepare func() (string, func() error, error),
-	report func(bool, bool, bool, orders.Update, status.Instances) error, updates ...*imageUpdates,
+	report func(bool, bool, bool, orders.Update, status.Instances) error, reportRows func([]status.Instance), updates ...*imageUpdates,
 ) error {
 	template := vm.Instance{
 		Backend: cfg.VM.Backend, Namespace: namespace,
@@ -35,7 +35,7 @@ func execute(ctx context.Context, cfg config.Config, github orders.Config, names
 	r := &reconciler{
 		backend: backend, registry: runners, store: store, template: template,
 		limit: github.MaxConcurrent, startupTimeout: cfg.Runner.StartupTimeout, idleTimeout: cfg.Runner.IdleTimeout,
-		logger: logger, events: make(chan runnerEvent), instances: make(map[string]*instanceState), report: report,
+		logger: logger, events: make(chan runnerEvent), instances: make(map[string]*instanceState), report: report, reportRows: reportRows,
 	}
 	if len(updates) > 0 {
 		r.images = updates[0]

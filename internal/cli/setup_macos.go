@@ -52,6 +52,17 @@ func runMacSetup(automatic, resume bool, source, key, appName string, existingAp
 	release := filepath.Dir(executable)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if !automatic && !resume {
+		current, currentErr := filepath.EvalSymlinks(filepath.Join(macos.Root(), "current"))
+		if currentErr == nil && current == release {
+			if _, err := os.Stat(host.ConfigPath()); err == nil {
+				if !term.IsTerminal(os.Stdin.Fd()) || !term.IsTerminal(os.Stdout.Fd()) {
+					return runConfigApply([]string{"--yes"})
+				}
+				return runConfigApply(nil)
+			}
+		}
+	}
 	ctx, cancel := context.WithTimeout(ctx, 55*time.Minute)
 	defer cancel()
 	return macos.Activate(ctx, release, func() (*macos.Candidate, error) {
@@ -126,24 +137,29 @@ func prepareMacActivation(ctx context.Context, release string, automatic, resume
 			key, err = config.ReadKey(macos.Key())
 		}
 	default:
-		cfg, err = config.Load(path)
+		activePath, err := macos.ActiveConfigPath(ctx)
+		if err != nil {
+			return nil, err
+		}
+		activeKey := macos.Key()
+		if activePath == "" || automatic {
+			activePath = path
+		} else {
+			activeKey = filepath.Join(filepath.Dir(activePath), "github-app.pem")
+		}
+		cfg, err = config.Load(activePath)
 		if err == nil {
-			key, err = config.ReadKey(macos.Key())
+			key, err = config.ReadKey(activeKey)
 		}
 		if err == nil {
 			err = validate(cfg, key)
 		}
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err != nil {
 		return nil, err
-	}
-	if !automatic && !initial && term.IsTerminal(os.Stdin.Fd()) && term.IsTerminal(os.Stdout.Fd()) {
-		if err := setup.ImageUpdatePrompt(&cfg); err != nil {
-			if errors.Is(err, huh.ErrUserAborted) {
-				return nil, nil
-			}
-			return nil, err
-		}
 	}
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
@@ -171,7 +187,7 @@ func prepareMacActivation(ctx context.Context, release string, automatic, resume
 	if cfg.Runner.Execute {
 		intake = "executing"
 	}
-	return &macos.Candidate{Config: data, Key: key, ReplaceEditable: !resume && (automatic || !initial && cfg.Runner.ImageAutoUpdate != nil), Scope: cfg.GitHub.ScopeURL, ScaleSet: cfg.GitHub.ScaleSetName, Intake: intake}, nil
+	return &macos.Candidate{Config: data, Key: key, ReplaceEditable: !resume && automatic, Scope: cfg.GitHub.ScopeURL, ScaleSet: cfg.GitHub.ScaleSetName, Intake: intake}, nil
 }
 
 func probeMacSetup(ctx context.Context, cfg config.Config, key []byte) error {
@@ -181,7 +197,7 @@ func probeMacSetup(ctx context.Context, cfg config.Config, key []byte) error {
 	probe, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	_, err := orders.ProbeScaleSet(probe, orders.Config{
-		ScopeURL: cfg.GitHub.ScopeURL, ScaleSetName: cfg.GitHub.ScaleSetName,
+		ScopeURL: cfg.GitHub.ScopeURL, ScaleSetName: cfg.GitHub.ScaleSetName, RunnerGroup: cfg.RunnerGroup(),
 		AppID: cfg.GitHub.AppID, InstallationID: cfg.GitHub.InstallationID, PrivateKey: key,
 	})
 	if err != nil {

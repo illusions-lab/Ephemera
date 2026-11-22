@@ -2,7 +2,7 @@
 Description=Ephemera GitHub Actions Scale Set listener
 Wants=network-online.target
 After=network-online.target
-ConditionPathExists=/etc/ephemera/config.yaml
+ConditionPathExists=/etc/ephemera/active/config.yaml
 
 [Service]
 Type=notify
@@ -12,12 +12,12 @@ SupplementaryGroups=kvm
 UMask=0077
 KillMode=mixed
 ExecCondition=+/opt/ephemera/recover-install --guard-start
-ExecStart=/usr/local/bin/ephemerad --create --status-socket=/run/ephemera/status.sock
+ExecStart=/usr/local/bin/ephemerad --create --config=/etc/ephemera/active/config.yaml --status-socket=/run/ephemera/status.sock
 StandardOutput=journal
 StandardError=journal
 RuntimeDirectory=ephemera
 RuntimeDirectoryMode=0755
-LoadCredential=github-app-key:/etc/ephemera/credentials/github-app.pem
+LoadCredential=github-app-key:/etc/ephemera/active/github-app.pem
 StateDirectory=ephemera
 StateDirectoryMode=0700
 TimeoutStartSec=40min

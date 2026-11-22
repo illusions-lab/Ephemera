@@ -128,6 +128,15 @@ func session(ctx context.Context, conn net.Conn, serve func(context.Context, <-c
 
 // Drain holds the lease until the caller returns from the service operation.
 func Drain(ctx context.Context, root string, input *os.File, output *os.File, operation func() error) error {
+	return drain(ctx, root, input, output, operation)
+}
+
+// DrainWait waits for active jobs without offering forced aborts.
+func DrainWait(ctx context.Context, root string, output *os.File, operation func() error) error {
+	return drain(ctx, root, nil, output, operation)
+}
+
+func drain(ctx context.Context, root string, input *os.File, output *os.File, operation func() error) error {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", Path(root))
 	if err != nil {
 		return fmt.Errorf("open drain socket: %w. Keep the candidate staged and stop the old service in a maintenance window after confirming its jobs have finished", err)
@@ -144,7 +153,7 @@ func Drain(ctx context.Context, root string, input *os.File, output *os.File, op
 		err := decoder.Decode(&snapshot)
 		return snapshot, err
 	}
-	interactive := term.IsTerminal(input.Fd()) && term.IsTerminal(output.Fd())
+	interactive := input != nil && term.IsTerminal(input.Fd()) && term.IsTerminal(output.Fd())
 	reader := bufio.NewReader(input)
 	var previous []Identity
 	printed := false

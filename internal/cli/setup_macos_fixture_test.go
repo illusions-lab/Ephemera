@@ -114,7 +114,12 @@ func runDaemonFixture(args []string) error {
 	if err := tart.CheckInstalled(context.Background()); err != nil {
 		return err
 	}
+	digest, err := config.Digest(cfg)
+	if err != nil {
+		return err
+	}
 	snapshot := status.Snapshot{
+		ConfigDigest: digest,
 		ActivationID: *id, Scope: cfg.GitHub.ScopeURL, ScaleSet: cfg.GitHub.ScaleSetName,
 		Phase: "Healthy", GitHub: "connected", Intake: "observing",
 	}

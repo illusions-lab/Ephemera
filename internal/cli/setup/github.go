@@ -177,7 +177,7 @@ type githubPageData struct {
 	CreateURLs                                                                                []githubCreateOption
 }
 
-func createGitHubApp(scaleSet, appName string, systemSetup, allowTunnel bool) (githubConnection, error) {
+func createGitHubApp(scaleSet, appName string, systemSetup, allowTunnel bool, onVerified func(githubConnection) error) error {
 	useTunnel := allowTunnel && !browserOnThisHost()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -189,7 +189,7 @@ func createGitHubApp(scaleSet, appName string, systemSetup, allowTunnel bool) (g
 	}
 	var openTunnel func(context.Context, string) (*quickTunnel, error)
 	if useTunnel {
-		openTunnel = func(ctx context.Context, address string) (*quickTunnel, error) {
+		openTunnel = func(_ context.Context, address string) (*quickTunnel, error) {
 			fmt.Println("Starting Cloudflare Quick Tunnel…")
 			tunnel, err := startQuickTunnel(ctx, address)
 			if ctx.Err() != nil {
@@ -206,14 +206,17 @@ func createGitHubApp(scaleSet, appName string, systemSetup, allowTunnel bool) (g
 		if publicURL == "" && !useTunnel {
 			openSetupBrowser(wait, localURL)
 		}
-	})
+	}, onVerified)
+	if connection.AppID != 0 {
+		return err
+	}
 	if errors.Is(err, context.Canceled) {
-		return githubConnection{}, huh.ErrUserAborted
+		return huh.ErrUserAborted
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return githubConnection{}, errors.New("GitHub App setup expired")
+		return errors.New("GitHub App setup expired")
 	}
-	return connection, err
+	return err
 }
 
 func browserOnThisHost() bool {
@@ -308,7 +311,7 @@ func hostGitHubAppName(hostname string, number int) string {
 	return strings.TrimSpace(truncateGitHubAppName(name, limit)) + suffix
 }
 
-func waitForGitHubApp(ctx context.Context, defaultScaleSet, defaultAppName string, systemSetup bool, client *http.Client, openTunnel func(context.Context, string) (*quickTunnel, error), ready func(address, localURL, publicURL string)) (githubConnection, error) {
+func waitForGitHubApp(ctx context.Context, defaultScaleSet, defaultAppName string, systemSetup bool, client *http.Client, openTunnel func(context.Context, string) (*quickTunnel, error), ready func(address, localURL, publicURL string), onVerified func(githubConnection) error) (githubConnection, error) {
 	defaultAppName = strings.TrimSpace(defaultAppName)
 	if defaultAppName == "" {
 		hostname, _ := os.Hostname()
@@ -540,10 +543,11 @@ func waitForGitHubApp(ctx context.Context, defaultScaleSet, defaultAppName strin
 	ready(address, localBase+startPath, publicURL)
 	select {
 	case connection := <-result:
+		err := onVerified(connection)
 		shutdown, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdown)
-		return connection, nil
+		return connection, err
 	case err := <-serveErr:
 		return githubConnection{}, fmt.Errorf("serve browser setup: %w", err)
 	case <-ctx.Done():

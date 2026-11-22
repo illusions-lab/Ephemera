@@ -65,17 +65,27 @@ func TestBrowserGitHubAppSetup(t *testing.T) {
 		err        error
 	}
 	done := make(chan outcome, 1)
+	terminalContinued := make(chan struct{})
+	awaitingTerminal := make(chan struct{})
+	tunnelStopped := make(chan struct{})
 	go func() {
 		openTunnel := func(context.Context, string) (*quickTunnel, error) {
-			stopped := make(chan struct{})
 			return &quickTunnel{
 				address: &url.URL{Scheme: "https", Host: "ephemera-test.trycloudflare.com"},
-				done:    stopped,
-				stop:    func() { close(stopped) },
+				done:    tunnelStopped,
+				stop:    func() { close(tunnelStopped) },
 			}, nil
 		}
 		connection, err := waitForGitHubApp(ctx, "ephemera-ubuntu-amd64", "", true, client, openTunnel, func(_, localURL, publicURL string) {
 			start <- [2]string{localURL, publicURL}
+		}, func(githubConnection) error {
+			close(awaitingTerminal)
+			select {
+			case <-terminalContinued:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		})
 		done <- outcome{connection, err}
 	}()
@@ -205,7 +215,24 @@ func TestBrowserGitHubAppSetup(t *testing.T) {
 		t.Fatal("system setup should explain how to start the service after saving")
 	}
 	select {
+	case <-awaitingTerminal:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	request(http.MethodGet, publicURL, http.StatusOK, "5. Save the configuration in the terminal")
+	select {
+	case <-tunnelStopped:
+		t.Fatal("tunnel closed before the terminal continued")
+	default:
+	}
+	close(terminalContinued)
+	select {
 	case result := <-done:
+		select {
+		case <-tunnelStopped:
+		default:
+			t.Fatal("tunnel stayed open after the terminal continued")
+		}
 		if result.err != nil || result.connection.AppID != 123 || result.connection.InstallationID != 456 || result.connection.Scope != "https://github.com/example" ||
 			result.connection.ScaleSet != "ephemera-custom" || result.connection.AppSlug != "ephemera-test" ||
 			result.connection.Permission != "organization_self_hosted_runners" || string(result.connection.Key) != key {

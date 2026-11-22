@@ -105,13 +105,29 @@ func offer(id int64) *scaleset.JobAvailable {
 }
 
 type fakeScaleSets struct {
-	found   *scaleset.RunnerScaleSet
-	lookup  string
-	created *scaleset.RunnerScaleSet
+	found     *scaleset.RunnerScaleSet
+	lookup    string
+	created   *scaleset.RunnerScaleSet
+	updated   *scaleset.RunnerScaleSet
+	groupName string
+	groupID   int
 }
 
-func (s *fakeScaleSets) GetRunnerScaleSet(_ context.Context, _ int, name string) (*scaleset.RunnerScaleSet, error) {
-	s.lookup = name
+func (s *fakeScaleSets) GetRunnerGroupByName(_ context.Context, name string) (*scaleset.RunnerGroup, error) {
+	s.groupName = name
+	return &scaleset.RunnerGroup{ID: 7}, nil
+}
+
+func (s *fakeScaleSets) UpdateRunnerScaleSet(_ context.Context, id int, set *scaleset.RunnerScaleSet) (*scaleset.RunnerScaleSet, error) {
+	s.updated = set
+	result := *s.found
+	result.ID, result.Labels = id, set.Labels
+	s.found = &result
+	return s.found, nil
+}
+
+func (s *fakeScaleSets) GetRunnerScaleSet(_ context.Context, groupID int, name string) (*scaleset.RunnerScaleSet, error) {
+	s.lookup, s.groupID = name, groupID
 	return s.found, nil
 }
 
@@ -124,19 +140,43 @@ func TestFindScaleSetCreatesOnlyWhenRequestedAndReusesExisting(t *testing.T) {
 	const name = "test+linux"
 	ctx := context.Background()
 	api := &fakeScaleSets{}
-	if _, err := findScaleSet(ctx, api, name, false); err == nil || api.created != nil {
+	if _, err := findScaleSet(ctx, api, Config{ScaleSetName: name}); err == nil || api.created != nil {
 		t.Fatal("missing set should require explicit creation")
 	}
-	set, err := findScaleSet(ctx, api, name, true)
+	set, err := findScaleSet(ctx, api, Config{ScaleSetName: name, Create: true})
 	if err != nil || set.Name != name || set.RunnerGroupID != 1 ||
 		!reflect.DeepEqual(set.Labels, []scaleset.Label{{Name: name}}) || api.lookup != "test%2Blinux" {
 		t.Fatalf("set = %+v, lookup = %q, err = %v", set, api.lookup, err)
 	}
 
-	api = &fakeScaleSets{found: &scaleset.RunnerScaleSet{ID: 42, Name: name}}
-	set, err = findScaleSet(ctx, api, name, true)
+	api = &fakeScaleSets{found: &scaleset.RunnerScaleSet{ID: 42, Name: name, Labels: []scaleset.Label{{Name: name}}}}
+	set, err = findScaleSet(ctx, api, Config{ScaleSetName: name, Create: true})
 	if err != nil || set != api.found || api.created != nil {
 		t.Fatalf("existing set should be reused, got %+v, err = %v", set, err)
+	}
+}
+
+func TestFindScaleSetUpdatesLabelsInSelectedGroup(t *testing.T) {
+	api := &fakeScaleSets{found: &scaleset.RunnerScaleSet{ID: 42, Name: "mac-build",
+		Labels: []scaleset.Label{{Name: "mac-build"}, {Name: "manual"}},
+	}}
+	cfg := Config{ScaleSetName: "mac-build", RunnerGroup: "Dedicated Macs", Create: true,
+		Labels: []string{"self-hosted", "macOS", "ARM64", "MACOS", "build"},
+	}
+	set, err := findScaleSet(t.Context(), api, cfg)
+	want := []scaleset.Label{{Name: "mac-build"}, {Name: "self-hosted"}, {Name: "macOS"}, {Name: "ARM64"}, {Name: "build"}, {Name: "manual"}}
+	if err != nil || set.ID != 42 || api.groupName != "Dedicated Macs" || api.groupID != 7 ||
+		api.created != nil || !reflect.DeepEqual(set.Labels, want) {
+		t.Fatalf("set = %+v, API = %+v, error = %v", set, api, err)
+	}
+	api.updated = nil
+	if _, err := findScaleSet(t.Context(), api, cfg); err != nil || api.updated != nil {
+		t.Fatalf("unchanged labels triggered an update: %v", err)
+	}
+	cfg.ReplaceLabels = true
+	set, err = findScaleSet(t.Context(), api, cfg)
+	if err != nil || !reflect.DeepEqual(set.Labels, want[:len(want)-1]) {
+		t.Fatalf("explicit labels did not remove old labels: set = %+v, error = %v", set, err)
 	}
 }
 

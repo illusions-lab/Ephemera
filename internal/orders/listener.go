@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/actions/scaleset"
@@ -17,6 +18,9 @@ import (
 type Config struct {
 	ScopeURL       string
 	ScaleSetName   string
+	RunnerGroup    string
+	Labels         []string
+	ReplaceLabels  bool
 	AppID          int64
 	InstallationID int64
 	PrivateKey     []byte
@@ -35,6 +39,8 @@ type Config struct {
 // Update carries the latest demand and the lifecycle events in a single batch.
 // Handlers must tolerate replay. A successful return acknowledges the batch.
 type Update struct {
+	RunnerGroup      string
+	Labels           *[]string
 	ScaleSetID       int
 	TargetRunners    int
 	AssignedJobs     int
@@ -55,6 +61,8 @@ type session interface {
 }
 
 type scaleSets interface {
+	GetRunnerGroupByName(context.Context, string) (*scaleset.RunnerGroup, error)
+	UpdateRunnerScaleSet(context.Context, int, *scaleset.RunnerScaleSet) (*scaleset.RunnerScaleSet, error)
 	GetRunnerScaleSet(ctx context.Context, groupID int, name string) (*scaleset.RunnerScaleSet, error)
 	CreateRunnerScaleSet(ctx context.Context, set *scaleset.RunnerScaleSet) (*scaleset.RunnerScaleSet, error)
 }
@@ -72,7 +80,7 @@ func Listen(ctx context.Context, cfg Config, logger *slog.Logger, handle func(co
 	if err != nil {
 		return fmt.Errorf("configure GitHub client: %w", err)
 	}
-	set, err := findScaleSet(ctx, client, cfg.ScaleSetName, cfg.Create)
+	set, err := findScaleSet(ctx, client, cfg)
 	if err != nil {
 		return err
 	}
@@ -97,8 +105,24 @@ func Listen(ctx context.Context, cfg Config, logger *slog.Logger, handle func(co
 		}
 	}()
 	logger.Info("Listening for GitHub jobs", "scale_set", set.Name, "scale_set_id", set.ID, "claim", cfg.Claim)
+	group := set.RunnerGroupName
+	if group == "" {
+		group = cfg.RunnerGroup
+		if group == "" {
+			group = "Default"
+		}
+	}
+	var labels *[]string
+	if set.Labels != nil {
+		names := make([]string, 0, len(set.Labels))
+		for _, label := range set.Labels {
+			names = append(names, label.Name)
+		}
+		labels = &names
+	}
 	err = pollTracked(ctx, s, cfg.MaxConcurrent, cfg.Claim, cfg.CheckImage, cfg.Capacity, cfg.Polled, cfg.Acquisitions, cfg.BeginAcquire, func(ctx context.Context, update Update) error {
 		update.ScaleSetID = set.ID
+		update.RunnerGroup, update.Labels = group, labels
 		return handle(ctx, update)
 	})
 	if cfg.Disconnected != nil {
@@ -117,7 +141,7 @@ func ProbeScaleSet(ctx context.Context, cfg Config) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("configure GitHub client: %w", err)
 	}
-	set, err := lookupScaleSet(ctx, client, cfg.ScaleSetName)
+	set, err := lookupScaleSet(ctx, client, cfg)
 	return set != nil, err
 }
 
@@ -135,36 +159,111 @@ func newGitHubClient(cfg Config, info scaleset.SystemInfo, options ...scaleset.H
 
 const defaultGroupID = 1
 
-func lookupScaleSet(ctx context.Context, client scaleSets, name string) (*scaleset.RunnerScaleSet, error) {
+func lookupScaleSet(ctx context.Context, client scaleSets, cfg Config) (*scaleset.RunnerScaleSet, error) {
+	groupID, err := runnerGroupID(ctx, client, cfg.RunnerGroup)
+	if err != nil {
+		return nil, err
+	}
+	return lookupScaleSetInGroup(ctx, client, groupID, cfg.ScaleSetName)
+}
+
+func runnerGroupID(ctx context.Context, client scaleSets, name string) (int, error) {
+	if name == "" || strings.EqualFold(name, "Default") {
+		return defaultGroupID, nil
+	}
+	group, err := client.GetRunnerGroupByName(ctx, name)
+	if err != nil {
+		return 0, fmt.Errorf("find runner group %q: %w", name, err)
+	}
+	if group == nil || group.ID <= 0 {
+		return 0, fmt.Errorf("runner group %q was not found", name)
+	}
+	return group.ID, nil
+}
+
+func lookupScaleSetInGroup(ctx context.Context, client scaleSets, groupID int, name string) (*scaleset.RunnerScaleSet, error) {
 	// The SDK interpolates the name into the query string.
-	set, err := client.GetRunnerScaleSet(ctx, defaultGroupID, url.QueryEscape(name))
+	set, err := client.GetRunnerScaleSet(ctx, groupID, url.QueryEscape(name))
 	if err != nil {
 		return nil, fmt.Errorf("find Scale Set %q: %w", name, err)
 	}
 	return set, nil
 }
 
-func findScaleSet(ctx context.Context, client scaleSets, name string, create bool) (*scaleset.RunnerScaleSet, error) {
-	set, err := lookupScaleSet(ctx, client, name)
+func findScaleSet(ctx context.Context, client scaleSets, cfg Config) (*scaleset.RunnerScaleSet, error) {
+	name := cfg.ScaleSetName
+	groupID, err := runnerGroupID(ctx, client, cfg.RunnerGroup)
 	if err != nil {
 		return nil, err
 	}
-	if set != nil {
+	set, err := lookupScaleSetInGroup(ctx, client, groupID, name)
+	if err != nil {
+		return nil, err
+	}
+	if set == nil && !cfg.Create {
+		return nil, fmt.Errorf("Scale Set %q was not found in runner group %q; use --create to register it", name, cfg.RunnerGroup)
+	}
+	if set != nil && !cfg.Create {
 		return set, nil
 	}
-	if !create {
-		return nil, fmt.Errorf("Scale Set %q was not found in the default runner group; use --create to register it", name)
+	desired := append([]string{name}, cfg.Labels...)
+	current := []scaleset.Label(nil)
+	if set != nil {
+		current = set.Labels
+	}
+	labels, changed := scaleSetLabels(desired, current, cfg.ReplaceLabels)
+	if set != nil {
+		if !changed {
+			return set, nil
+		}
+		updated, err := client.UpdateRunnerScaleSet(ctx, set.ID, &scaleset.RunnerScaleSet{Labels: labels, RunnerSetting: set.RunnerSetting})
+		if err != nil {
+			return nil, fmt.Errorf("update Scale Set %q labels: %w", name, err)
+		}
+		if updated.RunnerGroupName == "" {
+			updated.RunnerGroupName = set.RunnerGroupName
+		}
+		return updated, nil
 	}
 	set, err = client.CreateRunnerScaleSet(ctx, &scaleset.RunnerScaleSet{
-		Name:          name,
-		RunnerGroupID: defaultGroupID,
-		Labels:        []scaleset.Label{{Name: name}},
+		Name: name, RunnerGroupID: groupID, Labels: labels,
 		RunnerSetting: scaleset.RunnerSetting{DisableUpdate: true},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create Scale Set %q: %w", name, err)
 	}
 	return set, nil
+}
+
+func scaleSetLabels(desired []string, current []scaleset.Label, replace bool) ([]scaleset.Label, bool) {
+	existing := make(map[string]scaleset.Label, len(current))
+	for _, label := range current {
+		existing[strings.ToLower(label.Name)] = label
+	}
+	var labels []scaleset.Label
+	used := make(map[string]bool, len(desired))
+	changed := false
+	for _, name := range desired {
+		key := strings.ToLower(name)
+		if used[key] {
+			continue
+		}
+		used[key] = true
+		label, found := existing[key]
+		if !found {
+			label = scaleset.Label{Name: name}
+			changed = true
+		}
+		labels = append(labels, label)
+	}
+	if !replace {
+		for _, label := range current {
+			if !used[strings.ToLower(label.Name)] {
+				labels = append(labels, label)
+			}
+		}
+	}
+	return labels, changed || len(labels) != len(current)
 }
 
 func poll(ctx context.Context, s session, limit int, claim bool, checkImage func() error, handle func(context.Context, Update) error) error {
