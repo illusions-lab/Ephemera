@@ -112,3 +112,12 @@ remain to be validated. The existing QEMU execution path requires a Linux host.
   to be validated.
 
 Neither trial has produced a validated base image.
+
+## CI coverage
+
+The independent [official runner image validation workflow](../../.github/workflows/official-runner-images.yml)
+runs on GitHub-hosted macOS 26 ARM64 and Ubuntu 24.04 ARM64. It compiles and runs
+a macOS and an Ubuntu smoke program, type-checks an iOS target, validates
+the pinned Packer template in SSH mode, and checks the Xcode archive
+preflight. The full image build and cold-clone tests require the deployment
+host and the inputs described above.

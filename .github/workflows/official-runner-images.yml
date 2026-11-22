@@ -40,6 +40,13 @@ jobs:
           for sdk in macosx iphoneos; do
             test -d "$(xcrun --sdk "$sdk" --show-sdk-path)"
           done
+          smoke=$(mktemp -d)
+          printf 'print("official macOS runner")\n' > "$smoke/main.swift"
+          xcrun --sdk macosx swiftc "$smoke/main.swift" -o "$smoke/macos-smoke"
+          "$smoke/macos-smoke"
+          xcrun --sdk iphoneos swiftc -target arm64-apple-ios18.0 \
+            -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" \
+            -typecheck "$smoke/main.swift"
       - name: Verify pinned Xcode inputs reject missing and mismatched archives
         run: |
           inputs=$(mktemp -d)
@@ -94,4 +101,8 @@ jobs:
           uname -sr
           gcc --version | head -n 1
           python3 --version
+          smoke=$(mktemp -d)
+          printf '#include <stdio.h>\nint main(void) { puts("official Ubuntu ARM64 runner"); }\n' > "$smoke/main.c"
+          gcc -Wall -Wextra -Werror "$smoke/main.c" -o "$smoke/ubuntu-smoke"
+          "$smoke/ubuntu-smoke"
           grep -F 'sources = ["source.azure-arm.image"]' images/ubuntu/templates/build.ubuntu-24_04-arm64.pkr.hcl
