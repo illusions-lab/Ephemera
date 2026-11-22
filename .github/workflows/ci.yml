@@ -73,6 +73,8 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go test ./...
+      - name: Check macOS activation, Tart, and recovery for races
+        run: go test -race ./internal/macos ./internal/vm ./internal/service
       - run: scripts/ci-macos-install-test.sh
       - run: scripts/ci-macos-power-test.sh
       - uses: goreleaser/goreleaser-action@v6

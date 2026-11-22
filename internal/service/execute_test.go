@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -34,14 +35,15 @@ func TestExecutionPreparesImageAfterRecovery(t *testing.T) {
 			store := fakeStore(t)
 			fake := &fakeExecution{}
 			fake.deleteFailures.Store(1)
+			registry := &rejectFirstRemoval{fakeExecution: fake, store: store}
 			github := orders.Config{ScopeURL: "https://github.com/test/project", ScaleSetName: "test", MaxConcurrent: 2}
 			id := uuid.NewString()
-			old := vm.Instance{ID: id, Resource: runnerName(id), Backend: "qemu", Scope: github.ScopeURL,
+			old := vm.Instance{ID: id, Resource: runnerName(id), Backend: "tart", Namespace: string(store) + "/tart", Scope: github.ScopeURL,
 				ScaleSet: github.ScaleSetName, ScaleSetID: 42, RunnerID: 123, Image: "/old.qcow2"}
 			if err := store.save(old); err != nil {
 				t.Fatal(err)
 			}
-			cfg := config.Defaults()
+			cfg := config.MacDefaults()
 			prepare := func() (string, func() error, error) {
 				if _, err := os.Stat(store.path(id)); !errors.Is(err, os.ErrNotExist) {
 					return "", nil, fmt.Errorf("previous record was not removed before preparing image: %v", err)
@@ -70,7 +72,7 @@ func TestExecutionPreparesImageAfterRecovery(t *testing.T) {
 				return nil
 			}
 			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-			err := execute(ctx, cfg, github, "", store, fake, fake, logger, listen, prepare,
+			err := execute(ctx, cfg, github, old.Namespace, store, fake, registry, logger, listen, prepare,
 				func(connected, recovering, _ bool, _ orders.Update, counts status.Instances) error {
 					if connected {
 						healthy.Store(true)
@@ -82,10 +84,28 @@ func TestExecutionPreparesImageAfterRecovery(t *testing.T) {
 				t.Fatalf("execute = %v, recovery reported = %t, healthy = %t", err, recovered, healthy.Load())
 			}
 			want := []string{"stop:" + old.Resource, "delete:" + old.Resource, "stop:" + old.Resource,
+				"delete:" + old.Resource, "remove-123:" + old.Resource, "stop:" + old.Resource,
 				"delete:" + old.Resource, "remove-123:" + old.Resource, "prepare-current-image:" + old.Resource}
 			if !reflect.DeepEqual(fake.calls, want) {
 				t.Errorf("execution order = %v, want %v", fake.calls, want)
 			}
 		})
 	}
+}
+
+type rejectFirstRemoval struct {
+	*fakeExecution
+	store    instanceStore
+	rejected atomic.Bool
+}
+
+func (r *rejectFirstRemoval) Remove(ctx context.Context, set, id int, name string) error {
+	if r.rejected.CompareAndSwap(false, true) {
+		r.record(fmt.Sprintf("remove-%d", id), vm.Instance{Resource: name})
+		return orders.ErrRunnerBusy
+	}
+	if _, err := os.Stat(r.store.path(strings.TrimPrefix(name, "ephemera-"))); err != nil {
+		return fmt.Errorf("recovery record missing before GitHub accepted deletion: %w", err)
+	}
+	return r.fakeExecution.Remove(ctx, set, id, name)
 }
