@@ -121,6 +121,38 @@ Enter your organization name, `owner/repository`, or a full GitHub URL in the wi
 
 On Linux, headless setup can provide a temporary Cloudflare Quick Tunnel link with SSH forwarding as an alternative. The tunnel closes when setup finishes, is canceled, or times out. If you already have an App, run setup with `--existing-app` and provide its IDs and PEM path.
 
+### Automatic runner image updates
+
+Interactive setup asks whether to enable runner image updates and defaults to
+Yes. For unattended setup, set `runner.image_auto_update: true` explicitly.
+The daemon checks the stable channel in execution mode for the built-in image
+sources. A customer-provided image source stays pinned. Hosts prepare approved
+recipes locally and switch the image used by new VMs after verification. Running
+jobs keep their original image. Turning updates off keeps the currently selected
+image. Use `ephe status` or `ephe status --json` to inspect the selection and
+rollback reason.
+
+The [image channel workflow](.github/workflows/image-channel.yml) publishes the
+stable manifest independently of the daemon release. It requires these
+GitHub Actions settings before the first production run.
+
+- Set repository variable `IMAGE_MIN_VERSION` to the first published daemon
+  version that supports the channel. Restrict the `image-candidates`,
+  `image-acceptance`, and `image-publish` environments to the main branch.
+  Restrict direct writes to the `image-channel` branch to the CI publisher.
+- Register isolated self-hosted runner groups restricted to the image-channel
+  workflow and label the three hosts `ephemera-image-linux-amd64`,
+  `ephemera-image-linux-arm64`, and `ephemera-image-macos-arm64`. Install the
+  normal QEMU/KVM or pinned Tart dependencies, plus `gh` and `jq`. Run the Mac
+  host runner from a dedicated logged-in user session with pinned Tart on
+  PATH and no installed Ephemera Tart binding under that account.
+- Set `EPHE_IMAGE_TEST_CONFIG`, `EPHE_IMAGE_TEST_KEY`,
+  `EPHE_IMAGE_TEST_CACHE`, and `EPHE_IMAGE_TEST_SCALE_SET` in each host runner's
+  environment. Provision a distinct test Scale Set per host with execution and
+  image updates enabled and at least two concurrent runners. Each Scale Set
+  must be visible to the repository's acceptance workflow. Keep its GitHub App
+  key private to the host and reserve the test Scale Sets for this workflow.
+
 ### Runner images and readiness
 
 | Guest image | Architecture | Base image and backend |

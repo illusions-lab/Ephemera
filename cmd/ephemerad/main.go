@@ -41,6 +41,7 @@ func run(args []string) error {
 	statusSocket := flags.String("status-socket", host.DaemonStatusSocket(), "Unix socket path for the read-only status endpoint")
 	keyPath := flags.String("github-app-key", "", "override the GitHub App PEM path")
 	activationID := flags.String("activation-id", "", "LaunchAgent activation identifier")
+	channelFile := flags.String("image-channel-file", "", "read approved image recipes from this local file instead of the stable channel")
 	logFile := flags.String("log-file", "", "write daemon logs to this rotating file")
 	create := flags.Bool("create", false, "create the configured Scale Set if absent")
 	claim := flags.Bool("claim", false, "acquire jobs for a test Scale Set; this command does not launch runners")
@@ -70,7 +71,7 @@ func run(args []string) error {
 		}
 		logger = slog.New(slog.NewTextHandler(logOutput{output}, nil))
 	}
-	err := service.Run(ctx, service.Options{ActivationID: *activationID, ConfigPath: *path, CacheDir: *cacheDir, KeyPath: *keyPath, StatusSocket: *statusSocket, StateDir: *stateDir, Create: *create, Claim: *claim}, logger)
+	err := service.Run(ctx, service.Options{ActivationID: *activationID, ImageChannelFile: *channelFile, ConfigPath: *path, CacheDir: *cacheDir, KeyPath: *keyPath, StatusSocket: *statusSocket, StateDir: *stateDir, Create: *create, Claim: *claim}, logger)
 	if err != nil && *logFile != "" {
 		logger.Error("Daemon stopped", "error", err)
 	}

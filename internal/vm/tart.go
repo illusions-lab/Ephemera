@@ -85,7 +85,7 @@ func findTart() (string, error) {
 
 func (t *Tart) command(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, t.binary, args...)
-	cmd.Env = append(cmd.Environ(), "TART_HOME="+t.home)
+	cmd.Env = append(cmd.Environ(), "TART_HOME="+t.home, "TART_NO_AUTO_PRUNE=")
 	return cmd
 }
 
@@ -212,7 +212,7 @@ func (t *Tart) runGuest(startup context.Context, i Instance, jit string, ready c
 	if err := t.waitGuestAgent(startup, i.Resource, vmExit); err != nil {
 		return err
 	}
-	if err := t.command(startup, "exec", i.Resource, "/usr/bin/sudo", "-n", "/bin/sh", "-c", tartProvision).Run(); err != nil {
+	if err := t.command(startup, "exec", i.Resource, "/usr/bin/sudo", "-n", "/bin/sh", "-c", tartProvision, "ephemera-provision", i.RunnerVersion, i.RunnerSHA256).Run(); err != nil {
 		return fmt.Errorf("prepare macOS runner: %w", err)
 	}
 	if err := startup.Err(); err != nil {
@@ -335,4 +335,50 @@ func (t *Tart) Delete(ctx context.Context, i Instance) error {
 		return nil
 	}
 	return errors.Join(deleteErr, err, errors.New("Tart clone still present or could not be checked"))
+}
+
+// ValidateCandidate exercises the guest agent and Runner provisioning without a JIT credential.
+func (t *Tart) ValidateCandidate(ctx context.Context, i Instance) (result error) {
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		result = errors.Join(result, t.Stop(cleanup, i), t.Delete(cleanup, i))
+	}()
+	if err := t.Prepare(ctx, i); err != nil {
+		return err
+	}
+	vmExit, err := t.startVM(i.Resource)
+	if err != nil {
+		return err
+	}
+	if err := t.waitGuestAgent(ctx, i.Resource, vmExit); err != nil {
+		return err
+	}
+	if err := t.command(ctx, "exec", i.Resource, "/usr/bin/sudo", "-n", "/bin/sh", "-c", tartProvision, "ephemera-provision", i.RunnerVersion, i.RunnerSHA256).Run(); err != nil {
+		return err
+	}
+	output, err := t.command(ctx, "exec", i.Resource, "/usr/bin/sudo", "-n", "-u", "ephemera-runner", "/opt/ephemera-runner/bin/Runner.Listener", "--version").Output()
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(output)) != i.RunnerVersion {
+		return errors.New("prepared macOS Runner version does not match the approved recipe")
+	}
+	return nil
+}
+
+func (t *Tart) RemoveCachedImage(ctx context.Context, ref string) error {
+	if !strings.HasPrefix(ref, "ghcr.io/cirruslabs/macos-tahoe-base@sha256:") {
+		return errors.New("refusing to remove unmanaged Tart image")
+	}
+	entries, err := t.list(ctx, "oci")
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name == ref {
+			return t.command(ctx, "delete", ref).Run()
+		}
+	}
+	return nil
 }

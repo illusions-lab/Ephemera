@@ -17,18 +17,28 @@ import (
 
 const SocketPath = "/run/ephemera/status.sock"
 
+type ImageUpdate struct {
+	Enabled        bool      `json:"enabled"`
+	Current        string    `json:"current"`
+	Previous       string    `json:"previous,omitempty"`
+	LastCheck      time.Time `json:"last_check"`
+	RollbackReason string    `json:"rollback_reason,omitempty"`
+	RolledBack     bool      `json:"rolled_back,omitempty"`
+}
+
 type Snapshot struct {
-	ActivationID  string     `json:"activation_id,omitempty"`
-	Phase         string     `json:"phase"`
-	FailedPhase   string     `json:"failed_phase,omitempty"`
-	GitHub        string     `json:"github"`
-	Scope         string     `json:"scope,omitempty"`
-	ScaleSet      string     `json:"scale_set,omitempty"`
-	Backend       string     `json:"backend,omitempty"`
-	Instances     *Instances `json:"instances,omitempty"`
-	Intake        string     `json:"intake"`
-	MaxConcurrent int        `json:"max_concurrent,omitempty"`
-	Demand        *Demand    `json:"demand,omitempty"`
+	ImageUpdate   *ImageUpdate `json:"image_update,omitempty"`
+	ActivationID  string       `json:"activation_id,omitempty"`
+	Phase         string       `json:"phase"`
+	FailedPhase   string       `json:"failed_phase,omitempty"`
+	GitHub        string       `json:"github"`
+	Scope         string       `json:"scope,omitempty"`
+	ScaleSet      string       `json:"scale_set,omitempty"`
+	Backend       string       `json:"backend,omitempty"`
+	Instances     *Instances   `json:"instances,omitempty"`
+	Intake        string       `json:"intake"`
+	MaxConcurrent int          `json:"max_concurrent,omitempty"`
+	Demand        *Demand      `json:"demand,omitempty"`
 }
 
 type Instances struct {

@@ -44,10 +44,11 @@ type Config struct {
 		InstallationID int64  `yaml:"installation_id"`
 	}
 	Runner struct {
-		Execute        bool          `yaml:"execute,omitempty"`
-		MaxConcurrent  int           `yaml:"max_concurrent"`
-		StartupTimeout time.Duration `yaml:"startup_timeout"`
-		IdleTimeout    time.Duration `yaml:"idle_timeout"`
+		ImageAutoUpdate *bool         `yaml:"image_auto_update,omitempty"`
+		Execute         bool          `yaml:"execute,omitempty"`
+		MaxConcurrent   int           `yaml:"max_concurrent"`
+		StartupTimeout  time.Duration `yaml:"startup_timeout"`
+		IdleTimeout     time.Duration `yaml:"idle_timeout"`
 	}
 	VM struct {
 		Backend   string

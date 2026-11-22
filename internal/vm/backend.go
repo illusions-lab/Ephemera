@@ -4,10 +4,11 @@ import "context"
 
 // Instance identifies resources across daemon restarts.
 type Instance struct {
-	ID, Backend, Image, Resource string
-	Namespace                    string `json:",omitempty"`
-	Scope, ScaleSet              string
-	ScaleSetID, RunnerID         int
+	ID, Backend, Image, Resource               string
+	ImageRevision, RunnerVersion, RunnerSHA256 string `json:",omitempty"`
+	Namespace                                  string `json:",omitempty"`
+	Scope, ScaleSet                            string
+	ScaleSetID, RunnerID                       int
 }
 
 type Process struct {

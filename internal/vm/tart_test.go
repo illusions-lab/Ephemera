@@ -215,3 +215,34 @@ esac
 		t.Fatal(err)
 	}
 }
+
+func TestTartCandidateSmoke(t *testing.T) {
+	home, ref := os.Getenv("EPHEMERA_TART_SMOKE_HOME"), os.Getenv("EPHEMERA_TART_SMOKE_IMAGE")
+	if home == "" || ref == "" {
+		t.Skip("set EPHEMERA_TART_SMOKE_HOME and EPHEMERA_TART_SMOKE_IMAGE on a macOS test host")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Minute)
+	defer cancel()
+	tart, err := NewTart(home, 2, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tart.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := tart.ResolveImage(ctx, ref, nil); err != nil {
+		t.Fatal(err)
+	}
+	id := uuid.NewString()
+	instance := Instance{
+		ID: id, Resource: "ephemera-" + id, Backend: "tart", Namespace: home, Image: ref,
+		RunnerVersion: "2.338.2", RunnerSHA256: "25a065af409ffa317ab4d5a3b614dd15fc9c40f2172bc1b35a1b1258e919a388",
+	}
+	if err := tart.ValidateCandidate(ctx, instance); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := tart.lookup(ctx, instance)
+	if err != nil || entry != nil {
+		t.Fatalf("candidate VM was not removed: %v (%v)", entry, err)
+	}
+}

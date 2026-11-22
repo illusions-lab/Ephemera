@@ -74,6 +74,9 @@ func configureFirstRun(path, appName string, existingApp, systemSetup bool, cfg 
 	if existingApp {
 		return editWithDefaults(path, cfg, validate)
 	}
+	if err := ImageUpdatePrompt(&cfg); err != nil {
+		return err
+	}
 	connection, err := createGitHubApp(cfg.GitHub.ScaleSetName, appName, systemSetup)
 	if err != nil {
 		return err
@@ -175,6 +178,9 @@ func editWithDefaults(path string, defaults config.Config, validate func(config.
 			cfg.VM.Profile = ""
 		}
 	}
+	if err := ImageUpdatePrompt(&cfg); err != nil {
+		return err
+	}
 	var key []byte
 	app, installation := "", ""
 	if !initial {
@@ -271,12 +277,25 @@ func confirmSetup(title, description string) (bool, error) {
 }
 
 func applyService(path string) error {
-	if _, err := config.Load(path); err != nil {
+	cfg, err := config.Load(path)
+	if err != nil {
 		return err
 	}
 	ok, err := confirmSetup("Apply configuration now?", "This starts Ephemera or restarts the running service.")
 	if err != nil || !ok {
 		return err
+	}
+	if cfg.Runner.ImageAutoUpdate == nil {
+		if err := ImageUpdatePrompt(&cfg); err != nil {
+			return err
+		}
+		data, err := yaml.Marshal(cfg)
+		if err != nil {
+			return err
+		}
+		if err := config.Replace(path, data); err != nil {
+			return err
+		}
 	}
 	for _, operation := range []string{"enable", "restart"} {
 		cmd := exec.Command("systemctl", operation, "ephemera.service")
@@ -294,6 +313,15 @@ func applyService(path string) error {
 
 func ConfigureMac(path, appName string, existingApp bool, validate func(config.Config, []byte) error) error {
 	return finishSetup(configureFirstRun(path, appName, existingApp, false, config.MacDefaults(), validate))
+}
+
+func ImageUpdatePrompt(cfg *config.Config) error {
+	enabled := cfg.Runner.ImageAutoUpdate == nil || *cfg.Runner.ImageAutoUpdate
+	if err := huh.NewConfirm().Title("Enable automatic runner image updates?").Value(&enabled).Run(); err != nil {
+		return err
+	}
+	cfg.Runner.ImageAutoUpdate = &enabled
+	return nil
 }
 
 func MacServerPrompt(preview string) (bool, error) {

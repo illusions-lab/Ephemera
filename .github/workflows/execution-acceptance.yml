@@ -1,7 +1,15 @@
 name: Dedicated Scale Set acceptance
+run-name: Dedicated Scale Set acceptance ${{ inputs.correlation }}
 on:
   workflow_dispatch:
     inputs:
+      correlation:
+        description: Optional identifier for a coordinating acceptance run
+        type: string
+      hold_seconds:
+        description: Seconds to keep the guest running
+        type: number
+        default: 60
       scale_set:
         description: Runner label of the dedicated test Scale Set
         required: true
@@ -26,7 +34,7 @@ permissions: {}
 jobs:
   guest:
     runs-on: ${{ inputs.scale_set }}
-    timeout-minutes: 10
+    timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix:
@@ -37,6 +45,7 @@ jobs:
         env:
           EXPECTED_OS: ${{ inputs.guest_os }}
           EXPECTED_ARCH: ${{ inputs.arch }}
+          HOLD_SECONDS: ${{ inputs.hold_seconds }}
         run: |
           set -euo pipefail
           case "$EXPECTED_OS:$EXPECTED_ARCH" in
@@ -60,5 +69,6 @@ jobs:
             printf 'Instance %s\n\n' "$instance_id"
             printf 'Boot %s\n' "$boot_id"
           } >> "$GITHUB_STEP_SUMMARY"
-          sleep 60
+          [[ "$HOLD_SECONDS" =~ ^[0-9]+$ ]] && (( HOLD_SECONDS <= 3600 ))
+          sleep "$HOLD_SECONDS"
           printf "Started %s\n\nFinished %s\n" "$started_at" "$(date -u +%FT%TZ)" >> "$GITHUB_STEP_SUMMARY"

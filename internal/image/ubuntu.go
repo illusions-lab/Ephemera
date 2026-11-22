@@ -224,7 +224,13 @@ func (c cache) buildUbuntu(ctx context.Context, work string, cfg Config) error {
 		"--expand", rootPartition, base, disk); err != nil {
 		return err
 	}
-	if err := command(ctx, "virt-customize", "--format", "qcow2", "-a", disk, "--no-logfile",
+	var snapshotArgs, snapshotCleanup []string
+	if cfg.Source.Snapshot != "" {
+		snapshotArgs = []string{"--write", `/etc/apt/apt.conf.d/90ephemera-snapshot:APT::Snapshot "` + cfg.Source.Snapshot + `";`}
+		snapshotCleanup = []string{"--delete", "/etc/apt/apt.conf.d/90ephemera-snapshot"}
+	}
+	customize := append([]string{"--format", "qcow2", "-a", disk, "--no-logfile"}, snapshotArgs...)
+	customize = append(customize,
 		"--upload", runner+":/tmp/ephemera-runner.tar.gz",
 		"--upload", filepath.Join(temp, "runner.service")+":/etc/systemd/system/ephemera-runner.service",
 		"--upload", filepath.Join(temp, "runner-launcher")+":/usr/local/bin/ephemera-runner",
@@ -242,7 +248,8 @@ func (c cache) buildUbuntu(ctx context.Context, work string, cfg Config) error {
 		"--run-command", bootInstall,
 		"--run-command", "cloud-init clean --logs --machine-id && touch /etc/machine-id",
 		"--delete", "/etc/resolv.conf",
-		"--link", "/run/systemd/resolve/stub-resolv.conf:/etc/resolv.conf"); err != nil {
+		"--link", "/run/systemd/resolve/stub-resolv.conf:/etc/resolv.conf")
+	if err := command(ctx, "virt-customize", append(customize, snapshotCleanup...)...); err != nil {
 		return err
 	}
 	if err := command(ctx, "qemu-img", "check", "-f", "qcow2", disk); err != nil {

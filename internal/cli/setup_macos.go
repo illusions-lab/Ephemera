@@ -137,6 +137,14 @@ func prepareMacActivation(ctx context.Context, release string, automatic, resume
 	if err != nil {
 		return nil, err
 	}
+	if !automatic && !initial && term.IsTerminal(os.Stdin.Fd()) && term.IsTerminal(os.Stdout.Fd()) {
+		if err := setup.ImageUpdatePrompt(&cfg); err != nil {
+			if errors.Is(err, huh.ErrUserAborted) {
+				return nil, nil
+			}
+			return nil, err
+		}
+	}
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return nil, err
@@ -163,7 +171,7 @@ func prepareMacActivation(ctx context.Context, release string, automatic, resume
 	if cfg.Runner.Execute {
 		intake = "executing"
 	}
-	return &macos.Candidate{Config: data, Key: key, ReplaceEditable: automatic && !resume, Scope: cfg.GitHub.ScopeURL, ScaleSet: cfg.GitHub.ScaleSetName, Intake: intake}, nil
+	return &macos.Candidate{Config: data, Key: key, ReplaceEditable: !resume && (automatic || !initial && cfg.Runner.ImageAutoUpdate != nil), Scope: cfg.GitHub.ScopeURL, ScaleSet: cfg.GitHub.ScaleSetName, Intake: intake}, nil
 }
 
 func probeMacSetup(ctx context.Context, cfg config.Config, key []byte) error {

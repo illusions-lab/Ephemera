@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 )
 
 type Platform struct {
@@ -28,6 +29,7 @@ func (p Platform) Validate() error {
 }
 
 type Source struct {
+	Snapshot      string `yaml:"snapshot,omitempty" json:"snapshot,omitempty"`
 	BaseURL       string `yaml:"base_url"`
 	BaseSHA256    string `yaml:"base_sha256"`
 	RunnerVersion string `yaml:"runner_version"`
@@ -56,6 +58,11 @@ func supports(p Platform) bool { return p.Tag == "ubuntu" && (p.Arch == "amd64" 
 var runnerVersion = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 
 func (s Source) Validate() error {
+	if s.Snapshot != "" {
+		if _, err := time.Parse("20060102T150405Z", s.Snapshot); err != nil {
+			return errors.New("invalid Ubuntu snapshot timestamp")
+		}
+	}
 	base, err := url.Parse(s.BaseURL)
 	if err != nil || base.Scheme != "https" || base.Hostname() == "" ||
 		base.User != nil || base.RawQuery != "" || base.ForceQuery || base.Fragment != "" || base.Path == "" {

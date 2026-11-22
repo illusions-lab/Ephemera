@@ -17,6 +17,7 @@ import (
 
 type Options struct {
 	ConfigPath, CacheDir, KeyPath, StatusSocket, StateDir string
+	ImageChannelFile                                      string
 	ActivationID                                          string
 	Create, Claim                                         bool
 }
@@ -158,9 +159,11 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 		if err != nil {
 			return err
 		}
+		updates := newImageUpdates(cfg, root, selected, logger, prepare, opts.ImageChannelFile)
 		return execute(ctx, cfg, orderConfig, selected.Namespace, store, selected.VM, runners, logger, listen, prepareCurrent,
 			func(connected, recovering, stopping bool, update orders.Update, counts status.Instances) error {
 				current.Instances = &counts
+				current.ImageUpdate = updates.snapshot()
 				current.GitHub = "disconnected"
 				if connected {
 					current.GitHub = "connected"
@@ -184,7 +187,7 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 				}
 				publish()
 				return nil
-			})
+			}, updates)
 	}
 	_, checkImage, err := prepareCurrent()
 	if err != nil {

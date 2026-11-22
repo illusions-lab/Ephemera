@@ -128,6 +128,18 @@ func printStatus(w io.Writer, report statusReport) {
 		fmt.Fprintf(w, "%-13s %q\n", "Scale Set", s.ScaleSet)
 	}
 	fmt.Fprintf(w, "%-13s %s\n", "Job intake", s.Intake)
+	if update := s.ImageUpdate; update != nil {
+		fmt.Fprintf(w, "%-13s %s (automatic: %t)\n", "Runner image", update.Current, update.Enabled)
+		if update.Previous != "" {
+			fmt.Fprintf(w, "%-13s %s\n", "Previous image", update.Previous)
+		}
+		if !update.LastCheck.IsZero() {
+			fmt.Fprintf(w, "%-13s %s\n", "Image check", update.LastCheck.Format(time.RFC3339))
+		}
+		if update.RolledBack {
+			fmt.Fprintf(w, "Runner image rolled back (%s)\n", update.RollbackReason)
+		}
+	}
 	if s.Backend != "" {
 		fmt.Fprintf(w, "%-13s %s\n", "VM backend", s.Backend)
 	}

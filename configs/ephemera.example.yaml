@@ -11,6 +11,8 @@ github:
   installation_id: 789012
 
 runner:
+  # Set true to follow the verified image channel in execution mode.
+  # image_auto_update: true
   execute: false # Set true on a Linux amd64/KVM execution host.
   max_concurrent: 2
   startup_timeout: 3m

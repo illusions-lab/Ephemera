@@ -14,10 +14,12 @@ if /usr/sbin/dseditgroup -o checkmember -m "$name" admin | /usr/bin/grep -q '^ye
   exit 1
 fi
 /usr/bin/install -d -o "$name" -g staff -m 0700 "$root"
+version=${1:-2.338.2}
+sha=${2:-25a065af409ffa317ab4d5a3b614dd15fc9c40f2172bc1b35a1b1258e919a388}
 archive=$(/usr/bin/mktemp)
 trap 'rm -f "$archive"' EXIT
-/usr/bin/curl -fsSL --retry 2 -o "$archive" https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-osx-arm64-2.338.2.tar.gz
-printf '%s  %s\n' 25a065af409ffa317ab4d5a3b614dd15fc9c40f2172bc1b35a1b1258e919a388 "$archive" | /usr/bin/shasum -a 256 -c -
+/usr/bin/curl -fsSL --retry 2 -o "$archive" "https://github.com/actions/runner/releases/download/v$version/actions-runner-osx-arm64-$version.tar.gz"
+printf '%s  %s\n' "$sha" "$archive" | /usr/bin/shasum -a 256 -c -
 /usr/bin/tar -xzf "$archive" -C "$root"
 /usr/sbin/chown -R "$name":staff "$root"
 `

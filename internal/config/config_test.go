@@ -1,6 +1,7 @@
 package config
 
 import (
+	"go.yaml.in/yaml/v3"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,5 +116,30 @@ func TestMacDefaultsObserveWithPinnedTartImage(t *testing.T) {
 	}
 	if cfg.Runner.Execute || cfg.Runner.MaxConcurrent != 1 || cfg.VM.Backend != "tart" || cfg.VM.Arch != "arm64" || cfg.VM.ImageRef == "" {
 		t.Fatalf("unexpected macOS defaults: runner=%+v vm=%+v", cfg.Runner, cfg.VM)
+	}
+}
+
+func TestImageAutoUpdateConfigurationRoundTrip(t *testing.T) {
+	for _, value := range []*bool{nil, new(bool), func() *bool { yes := true; return &yes }()} {
+		cfg := MacDefaults()
+		cfg.GitHub.ScopeURL = "https://github.com/example/repo"
+		cfg.GitHub.AppID, cfg.GitHub.InstallationID = 1, 2
+		cfg.Runner.ImageAutoUpdate = value
+		encoded, err := yaml.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, encoded, 0600); err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := decoded.Runner.ImageAutoUpdate
+		if (value == nil) != (got == nil) || value != nil && *value != *got {
+			t.Fatalf("update selection did not round-trip: %s", encoded)
+		}
 	}
 }
