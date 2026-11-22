@@ -1,0 +1,97 @@
+name: Official runner image validation
+
+on:
+  push:
+    paths:
+      - .github/workflows/official-runner-images.yml
+      - scripts/check-official-macos-inputs.sh
+      - packaging/macos/official-runner-image-trial.md
+  pull_request:
+    paths:
+      - .github/workflows/official-runner-images.yml
+      - scripts/check-official-macos-inputs.sh
+      - packaging/macos/official-runner-image-trial.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: macOS official baseline and Tart provisioning template
+    runs-on: macos-26
+    timeout-minutes: 12
+    env:
+      UPSTREAM_COMMIT: 6ae22b7fe1e9897ad8220e69f154a603cbd4b0ab
+      PACKER_VERSION: 1.16.2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: actions/runner-images
+          ref: ${{ env.UPSTREAM_COMMIT }}
+          path: upstream
+          persist-credentials: false
+      - name: Check GitHub-hosted macOS ARM64 and Apple SDKs
+        run: |
+          test "$(uname -m)" = arm64
+          sw_vers
+          xcodebuild -version
+          for sdk in macosx iphoneos; do
+            test -d "$(xcrun --sdk "$sdk" --show-sdk-path)"
+          done
+      - name: Verify pinned Xcode inputs reject missing and mismatched archives
+        run: |
+          inputs=$(mktemp -d)
+          printf 'test input\n' > "$inputs/Apple.ipsw"
+          printf 'test input\n' > "$inputs/Xcode-26.6+17F113.xip"
+          if bash scripts/check-official-macos-inputs.sh "$inputs/Apple.ipsw" "$inputs" > "$inputs/result" 2>&1; then
+            echo 'Input check accepted invalid archives' >&2
+            exit 1
+          fi
+          grep -F 'SHA-256 mismatch:' "$inputs/result"
+          grep -F 'Missing archive:' "$inputs/result"
+      - name: Validate the pinned GitHub template in SSH mode
+        run: |
+          tools_dir=$(mktemp -d)
+          (
+            cd "$tools_dir"
+            archive="packer_${PACKER_VERSION}_darwin_arm64.zip"
+            base="https://releases.hashicorp.com/packer/$PACKER_VERSION"
+            curl -fsSLO "$base/$archive"
+            curl -fsSLO "$base/packer_${PACKER_VERSION}_SHA256SUMS"
+            awk -v archive="$archive" '$2 == archive' "packer_${PACKER_VERSION}_SHA256SUMS" | shasum -a 256 -c -
+            unzip -q "$archive"
+          )
+          packer="$tools_dir/packer"
+          export PACKER_PLUGIN_PATH="$tools_dir/plugins"
+          template=upstream/images/macos/templates/macOS-26.arm64.anka.pkr.hcl
+          "$packer" init "$template"
+          "$packer" validate -syntax-only "$template"
+          "$packer" validate \
+            -var builder_type=null -var source_vm_name=127.0.0.1 \
+            -var build_id=ci-preflight -var vm_username=trial \
+            -var vm_password=trial-placeholder \
+            -var xcode_install_storage_url=http://127.0.0.1:8000/ \
+            -var xcode_install_sas= "$template"
+
+  ubuntu-arm64:
+    name: Ubuntu ARM64 official baseline and builder check
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: actions/runner-images
+          ref: 74456c0b4eff7aa68e7352cc4fd3e123b62df26f
+          persist-credentials: false
+      - name: Record official Ubuntu environment and check upstream builder
+        run: |
+          test "$(uname -m)" = aarch64
+          . /etc/os-release
+          test "$ID" = ubuntu
+          test "$VERSION_ID" = 24.04
+          uname -sr
+          gcc --version | head -n 1
+          python3 --version
+          grep -F 'sources = ["source.azure-arm.image"]' images/ubuntu/templates/build.ubuntu-24_04-arm64.pkr.hcl
