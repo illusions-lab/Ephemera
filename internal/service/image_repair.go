@@ -63,7 +63,7 @@ func (r *reconciler) repairImage(event runnerEvent) {
 	if r.images != nil {
 		u := r.images
 		state := u.state
-		state.Failures = 0
+		state.Failures, state.FailureImage = 0, ""
 		if event.source.id != event.image.id {
 			r.retire(&state, *event.source)
 		}

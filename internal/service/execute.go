@@ -88,8 +88,16 @@ func execute(ctx context.Context, cfg config.Config, github orders.Config, names
 			logger.Warn("Use recovered runner image after bundled image preparation failed", "error", err)
 		}
 		r.setImage(active)
-		if r.images != nil && r.images.state.Failures >= 3 {
-			r.blockFailedImage()
+		if r.images != nil && r.images.state.Failures > 0 {
+			state := r.images.state
+			if state.FailureImage != "" && state.FailureImage != active.id {
+				state.Failures, state.FailureImage = 0, ""
+				if err := r.images.save(state); err != nil {
+					logger.Error("Reset failures for a different base image", "error", err)
+				}
+			} else if state.Failures >= 3 {
+				r.blockFailedImage()
+			}
 		}
 		github.CheckImage = func() error {
 			if r.imageBlocked.Load() {

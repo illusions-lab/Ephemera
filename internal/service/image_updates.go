@@ -36,6 +36,7 @@ type updateState struct {
 	Highest           uint64
 	Rejected          []imagechannel.Recipe
 	Failures          int
+	FailureImage      string `json:",omitempty"`
 	LastCheck         time.Time
 	RolledBack        bool
 	RollbackReason    string
@@ -165,6 +166,7 @@ func (u *imageUpdates) recover(ctx context.Context, baseline preparedImage) prep
 	}
 	next := u.state
 	next.Current, next.Previous, next.Failures, next.RolledBack = u.previous.recipe, nil, 0, true
+	next.FailureImage = ""
 	next.RollbackReason = "active image could not be recovered"
 	next.Rejected = append(next.Rejected, *u.state.Current)
 	if err := u.save(next); err != nil {
@@ -365,6 +367,7 @@ func (r *reconciler) imageChecked(event runnerEvent) {
 		r.retire(&next, u.previous)
 		next.RollbackReason = ""
 		next.Previous, next.Current, next.Highest, next.Failures, next.RolledBack = next.Current, p.recipe, p.recipe.Revision, 0, false
+		next.FailureImage = ""
 		if err := u.save(next); err != nil {
 			u.logger.Error("Save image update", "error", err)
 			return
@@ -393,11 +396,15 @@ func (r *reconciler) imageOutcome(i vm.Instance, event runnerEvent) {
 		if next.Failures == 0 {
 			return
 		}
-		next.Failures = 0
+		next.Failures, next.FailureImage = 0, ""
 	} else {
 		if !errors.Is(event.err, vm.ErrImageInfrastructure) {
 			return
 		}
+		if next.FailureImage != "" && next.FailureImage != i.Image {
+			next.Failures = 0
+		}
+		next.FailureImage = i.Image
 		next.Failures++
 	}
 	if next.Failures >= 3 {
@@ -412,6 +419,7 @@ func (r *reconciler) imageOutcome(i vm.Instance, event runnerEvent) {
 		next.RollbackReason = event.stage
 		next.Rejected = append(append([]imagechannel.Recipe(nil), next.Rejected...), *next.Current)
 		next.Current, next.Previous, next.RolledBack, next.Failures = u.previous.recipe, nil, true, 0
+		next.FailureImage = ""
 		if err := u.save(next); err != nil {
 			u.logger.Error("Save image rollback", "error", err)
 			return
