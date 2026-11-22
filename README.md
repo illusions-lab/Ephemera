@@ -284,7 +284,7 @@ Dispatch the [dedicated Scale Set acceptance workflow](.github/workflows/executi
 4. Exercise a transient cleanup failure. Confirm the instance keeps its slot until cleanup succeeds.
 5. Confirm the base image is unchanged and GitHub has no stale runner registrations.
 
-Record the candidate commit, daemon version, Scale Set label, and workflow run for each platform. GitHub Actions runs builds, installation checks, and VM acceptance in the CI workflow. The separate Release workflow starts after successful CI on the same main commit and verifies the packaged and public assets. To retry an existing tag, use the Release workflow’s `retry_tag` input on main.
+Record the candidate commit, daemon version, Scale Set label, and workflow run for each platform. GitHub Actions runs builds and installation checks in the CI workflow. Ubuntu VM acceptance runs independently and does not gate releases. The Release workflow starts after successful CI on the same main commit and verifies the packaged and public assets. To retry an existing tag, use the Release workflow’s `retry_tag` input on main.
 
 For a disposable Linux installer smoke test, use `make vm-test DEBIAN_IMAGE=... DEBIAN_SHA512=...` with a versioned Debian genericcloud AMD64 QCOW2 and its SHA-512. `make vm-debug` retains the test VM and prints its SSH command.
 

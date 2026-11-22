@@ -80,14 +80,6 @@ jobs:
           cache: true
       - name: Exercise installation and rollback on Ubuntu
         run: scripts/ci-install-test.sh
-  ubuntu-vm:
-    needs: source
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
-    uses: ./.github/workflows/ubuntu-vm.yml
-    with:
-      checkout_ref: ${{ needs.source.outputs.commit }}
-      linux_amd64_only: ${{ needs.source.outputs.arm64 != 'true' }}
-
   macos-install:
     needs: source
     if: needs.source.outputs.darwin == 'true'
