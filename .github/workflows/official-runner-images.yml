@@ -59,6 +59,8 @@ jobs:
           grep -F 'SHA-256 mismatch:' "$inputs/result"
           grep -F 'Missing archive:' "$inputs/result"
       - name: Validate the pinned GitHub template in SSH mode
+        env:
+          PACKER_GITHUB_API_TOKEN: ${{ github.token }}
         run: |
           tools_dir=$(mktemp -d)
           (
