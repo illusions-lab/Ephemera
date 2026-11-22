@@ -122,7 +122,7 @@ func newImageUpdates(cfg config.Config, root string, selection backend.Selection
 		}
 		tart := selection.VM.(*vm.Tart)
 		id := recipe.TartRef
-		id, check, err := tart.PrepareImage(ctx, id, recipe.RunnerVersion, recipe.RunnerSHA256, nil)
+		id, check, err := tart.PrepareImage(ctx, id, recipe.RunnerVersion, recipe.RunnerSHA256, cfg.VM.AppleToolchain, nil)
 		if err != nil {
 			return preparedImage{}, err
 		}

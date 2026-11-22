@@ -364,10 +364,10 @@ func (t *Tart) ValidateCandidate(ctx context.Context, i Instance) (result error)
 	if err := t.Prepare(ctx, i); err != nil {
 		return err
 	}
-	return t.provision(ctx, i)
+	return t.provision(ctx, i, "")
 }
 
-func (t *Tart) provision(ctx context.Context, i Instance) error {
+func (t *Tart) provision(ctx context.Context, i Instance, toolchain string) error {
 	vmExit, err := t.startVM(i.Resource)
 	if err != nil {
 		return err
@@ -384,6 +384,27 @@ func (t *Tart) provision(ctx context.Context, i Instance) error {
 	}
 	if strings.TrimSpace(string(output)) != i.RunnerVersion {
 		return errors.New("prepared macOS Runner version does not match the approved recipe")
+	}
+	if toolchain != "" {
+		return t.verifyAppleToolchain(ctx, i.Resource, toolchain)
+	}
+	return nil
+}
+
+func (t *Tart) verifyAppleToolchain(ctx context.Context, resource, toolchain string) error {
+	const check = `
+set -e
+/usr/bin/xcodebuild -version
+/usr/bin/xcrun --sdk macosx --show-sdk-path
+if [ "$1" = ios ]; then
+  /usr/bin/xcrun --sdk iphoneos --show-sdk-path
+fi
+`
+	cmd := t.command(ctx, "exec", resource, "/usr/bin/sudo", "-n", "-u", "ephemera-runner", "/bin/sh", "-c", check, "verify-xcode", toolchain)
+	var diagnostic boundedVMOutput
+	cmd.Stdout, cmd.Stderr = &diagnostic, &diagnostic
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("verify %s toolchain in Tart VM: use an image with full Xcode and the required SDK selected: %w", toolchain, tartDiagnostic(err, diagnostic.output.String()))
 	}
 	return nil
 }

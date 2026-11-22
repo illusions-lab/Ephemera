@@ -16,6 +16,7 @@ import (
 	"github.com/illusions-lab/Ephemera/internal/config"
 	"github.com/illusions-lab/Ephemera/internal/control"
 	"github.com/illusions-lab/Ephemera/internal/macos"
+	"github.com/illusions-lab/Ephemera/internal/orders"
 	"github.com/illusions-lab/Ephemera/internal/status"
 	"github.com/illusions-lab/Ephemera/internal/version"
 	"github.com/illusions-lab/Ephemera/internal/vm"
@@ -77,6 +78,12 @@ func runInstallFixture(args []string) error {
 		}
 		return nil
 	}
+	ensureScaleSetLabels = func(ctx context.Context, cfg orders.Config) error {
+		if cfg.ScopeURL != "https://github.com/fixture/ephemera" || len(cfg.Labels) == 0 {
+			return fmt.Errorf("unexpected Scale Set routing fixture")
+		}
+		return ctx.Err()
+	}
 	return Run(args)
 }
 
@@ -125,7 +132,7 @@ func runDaemonFixture(args []string) error {
 	}
 	if cfg.Runner.Execute {
 		snapshot.Intake = "executing"
-		if _, err := tart.CheckPreparedImage(context.Background(), cfg.VM.ImageRef, vm.TartRunnerVersion, vm.TartRunnerSHA256); err != nil {
+		if _, err := tart.CheckPreparedImage(context.Background(), cfg.VM.ImageRef, vm.TartRunnerVersion, vm.TartRunnerSHA256, cfg.VM.AppleToolchain); err != nil {
 			return fmt.Errorf("installer entered the readiness window without a prepared image: %w", err)
 		}
 	}

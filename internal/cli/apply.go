@@ -108,6 +108,22 @@ func loadConfigCandidate(ctx context.Context) (configCandidate, error) {
 	return configCandidate{cfg: cfg, data: data, key: key, digest: digest}, err
 }
 
+var ensureScaleSetLabels = orders.EnsureScaleSetLabels
+
+func applyScaleSetRouting(ctx context.Context, cfg config.Config, key []byte) error {
+	probe, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return ensureScaleSetLabels(probe, runnerRouting(cfg, key))
+}
+
+func runnerRouting(cfg config.Config, key []byte) orders.Config {
+	return orders.Config{
+		ScopeURL: cfg.GitHub.ScopeURL, ScaleSetName: cfg.GitHub.ScaleSetName, RunnerGroup: cfg.RunnerGroup(),
+		AppID: cfg.GitHub.AppID, InstallationID: cfg.GitHub.InstallationID, PrivateKey: key,
+		Labels: append([]string{cfg.GitHub.ScaleSetName}, cfg.ScaleSetLabels()...), ReplaceLabels: cfg.GitHub.Labels != nil,
+	}
+}
+
 func confirmConfigCandidate(ctx context.Context, candidate configCandidate, oldPath string, yes bool) (bool, error) {
 	cfg := candidate.cfg
 	if old, err := config.Load(oldPath); err == nil {
@@ -184,6 +200,9 @@ func applyMacConfig(ctx context.Context, yes bool) error {
 				return nil, fmt.Errorf("prepare runner image: %w", err)
 			}
 		}
+		if err := applyScaleSetRouting(ctx, candidate.cfg, candidate.key); err != nil {
+			return nil, err
+		}
 		confirmed = true
 		intake := "observing"
 		if candidate.cfg.Runner.Execute {
@@ -216,6 +235,9 @@ func runLinuxConfigStep(args []string) error {
 		}
 		ok, err := confirmConfigCandidate(ctx, candidate, "/etc/ephemera/active/config.yaml", len(args) == 3 && args[2] == "--yes")
 		if err != nil || !ok {
+			return err
+		}
+		if err := applyScaleSetRouting(ctx, candidate.cfg, candidate.key); err != nil {
 			return err
 		}
 		if err := os.WriteFile(filepath.Join(dir, "config.yaml"), candidate.data, 0644); err != nil {

@@ -66,7 +66,7 @@ func TestDoctorChecks(t *testing.T) {
 			change: func(c *doctorChecks) {
 				c.probeScaleSet = func(context.Context, orders.Config) (bool, error) { return false, nil }
 			},
-			want: []string{"[OK] GitHub App access", "[FAIL] Scale Set", "was not found in the default runner group"},
+			want: []string{"[OK] GitHub App access", "[FAIL] Scale Set", "was not found in runner group"},
 		},
 		{
 			name: "image missing", failed: true,

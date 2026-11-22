@@ -225,12 +225,23 @@ func printStatus(w io.Writer, report statusReport) {
 			fmt.Fprintf(w, "Pending GitHub deregistration: %d\n", i.PendingDeregistration)
 		}
 	}
-	if s.MaxConcurrent > 0 {
+	if s.Instances != nil && s.Instances.Capacity != nil {
+		printCapacity(w, *s)
+	} else if s.MaxConcurrent > 0 {
 		fmt.Fprintf(w, "%-13s %d configured concurrent runners\n", "Capacity", s.MaxConcurrent)
 	}
 	if s.Demand != nil {
 		fmt.Fprintf(w, "%-13s %d available · %d assigned · %d running · %d target runners\n",
 			"GitHub jobs", s.Demand.Available, s.Demand.Assigned, s.Demand.Running, s.Demand.TargetRunners)
 		fmt.Fprintf(w, "%-13s %s\n", "Demand data", s.Demand.UpdatedAt.Format(time.RFC3339))
+	}
+}
+
+func printCapacity(w io.Writer, s runtimeStatus.Snapshot) {
+	capacity := s.Instances.Capacity
+	fmt.Fprintf(w, "%-13s %d startable VM slots / %d configured concurrent runners\n", "Capacity", capacity.Startable, s.MaxConcurrent)
+	if capacity.AvailableMemoryMiB != nil {
+		fmt.Fprintf(w, "%-13s %d MiB available · %d MiB host reserve · %d MiB per VM\n",
+			"Host memory", *capacity.AvailableMemoryMiB, capacity.ReserveMiB, capacity.VMMemoryMiB)
 	}
 }

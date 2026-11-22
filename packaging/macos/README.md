@@ -40,6 +40,14 @@ wait for current jobs without a terminal.
 Use `ephe doctor`, `ephe status`, and
 `tail -F "$HOME/Library/Logs/Ephemera/daemon.log"` to inspect the service.
 
+For Apple builds, choose **Verify Apple toolchain in the VM** in setup or under
+**VM and images** in `ephe config`. For unattended setup, use
+`vm.apple_toolchain: macos` to verify Xcode and the macOS SDK, or
+`vm.apple_toolchain: ios` to also verify the iOS device SDK. The selected
+Tart image must already contain full Xcode. Ephemera validates each new
+prepared image before offering it to jobs. Run `ephe config apply` after
+editing an installed configuration.
+
 Run `ephe doctor --repair` to recover an interrupted activation and apply the
 saved configuration. This waits for active jobs before restarting the service.
 During a restart or upgrade, Ephemera retries a GitHub Scale Set session

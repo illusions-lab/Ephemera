@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 root = pathlib.Path(sys.argv[1])
+scale_set_labels = []
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -43,7 +44,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path.rstrip("/")
         if path.endswith("/runnerscalesets"):
-            return self.reply(200, {"count": 1, "value": [{"id": 1, "name": parse_qs(urlsplit(self.path).query).get("name", ["ephemera-ubuntu-amd64"])[0]}]})
+            name = parse_qs(urlsplit(self.path).query).get("name", ["ephemera-ubuntu-amd64"])[0]
+            return self.reply(200, {"count": 1, "value": [{"id": 1, "name": name, "labels": scale_set_labels}]})
         if path == "/queue":
             time.sleep(1)
             return self.reply(204)
@@ -72,7 +74,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path.rstrip("/")
         payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
         if path.endswith("/runnerscalesets/1"):
-            return self.reply(200, {"id": 1, "labels": payload["labels"]})
+            scale_set_labels[:] = payload["labels"]
+            return self.reply(200, {"id": 1, "labels": scale_set_labels})
         self.reply(404)
 
     def do_DELETE(self):

@@ -161,3 +161,30 @@ func TestStatusComparesSavedAndLoadedConfiguration(t *testing.T) {
 		t.Fatalf("legacy daemon marked configuration %v", got)
 	}
 }
+
+func TestCapacityDistinguishesMemoryShortageFromConfiguredConcurrency(t *testing.T) {
+	cfg := config.MacDefaults()
+	cfg.VM.HostReserveMiB = 384
+	var available uint64 = 4400
+	current := runtimeStatus.Snapshot{
+		ConfigDigest: "applied", MaxConcurrent: 1,
+		Instances: &runtimeStatus.Instances{
+			CapacityReason: "available memory after the host reserve",
+			Capacity: &runtimeStatus.Capacity{
+				Startable: 0, AvailableMemoryMiB: &available, ReserveMiB: 384, VMMemoryMiB: 4096,
+			},
+		},
+	}
+	var output bytes.Buffer
+	if err := reportDoctorCapacity(cfg, current, "applied", 8192, &output); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"0 startable VM slots / 1 configured", "4400 MiB available", "384 MiB host reserve", "4096 MiB per VM", "No VM can start currently"} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("missing %q from %s", expected, &output)
+		}
+	}
+	if err := reportDoctorCapacity(cfg, current, "applied", 4096, &output); err == nil || !strings.Contains(err.Error(), "requires 4480 MiB") {
+		t.Fatalf("expected a physical capacity error, got %v", err)
+	}
+}

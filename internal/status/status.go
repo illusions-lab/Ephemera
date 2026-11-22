@@ -52,14 +52,22 @@ type Instance struct {
 	CreatedAt time.Time `json:"created_at,omitzero"`
 }
 
+type Capacity struct {
+	Startable          int     `json:"startable"`
+	AvailableMemoryMiB *uint64 `json:"available_memory_mib,omitempty"`
+	ReserveMiB         uint64  `json:"reserve_mib"`
+	VMMemoryMiB        uint64  `json:"vm_memory_mib"`
+}
+
 type Instances struct {
-	CapacityReason        string `json:"capacity_reason,omitempty"`
-	Draining              bool   `json:"draining,omitempty"`
-	Starting              int    `json:"starting"`
-	Waiting               int    `json:"waiting"`
-	Running               int    `json:"running"`
-	Reclaiming            int    `json:"reclaiming"`
-	PendingDeregistration int    `json:"pending_deregistration,omitempty"`
+	Capacity              *Capacity `json:"capacity,omitempty"`
+	CapacityReason        string    `json:"capacity_reason,omitempty"`
+	Draining              bool      `json:"draining,omitempty"`
+	Starting              int       `json:"starting"`
+	Waiting               int       `json:"waiting"`
+	Running               int       `json:"running"`
+	Reclaiming            int       `json:"reclaiming"`
+	PendingDeregistration int       `json:"pending_deregistration,omitempty"`
 }
 
 type Demand struct {

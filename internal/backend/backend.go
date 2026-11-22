@@ -40,7 +40,7 @@ func Select(cfg config.Config, root, cache string, logger *slog.Logger, build Im
 			return Selection{}, err
 		}
 		return Selection{VM: tart, Namespace: filepath.Join(root, "tart"), PrepareImage: func(ctx context.Context) (string, func() error, error) {
-			return prepareTart(ctx, tart, root, cfg.VM.ImageRef, true, nil)
+			return prepareTart(ctx, tart, root, cfg.VM.ImageRef, cfg.VM.AppleToolchain, true, nil)
 		}}, nil
 	case "qemu":
 		var qemu vm.Backend
@@ -89,7 +89,7 @@ func newTart(cfg config.Config, root string) (*vm.Tart, error) {
 	return vm.NewTart(filepath.Join(root, "tart"), cfg.VM.VCPUs, cfg.VM.MemoryMiB)
 }
 
-func prepareTart(ctx context.Context, tart *vm.Tart, root, ref string, execute bool, progress io.Writer) (string, func() error, error) {
+func prepareTart(ctx context.Context, tart *vm.Tart, root, ref, toolchain string, execute bool, progress io.Writer) (string, func() error, error) {
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return "", nil, err
 	}
@@ -99,7 +99,7 @@ func prepareTart(ctx context.Context, tart *vm.Tart, root, ref string, execute b
 	if !execute {
 		return tart.ResolveImage(ctx, ref, progress)
 	}
-	return tart.PrepareImage(ctx, ref, vm.TartRunnerVersion, vm.TartRunnerSHA256, progress)
+	return tart.PrepareImage(ctx, ref, vm.TartRunnerVersion, vm.TartRunnerSHA256, toolchain, progress)
 }
 
 // PrepareImage explicitly prepares and verifies the configured image. Tart
@@ -117,7 +117,7 @@ func PrepareImage(ctx context.Context, cfg config.Config, root, cache string, lo
 		if err != nil {
 			return "", err
 		}
-		id, verify, err = prepareTart(ctx, tart, root, cfg.VM.ImageRef, cfg.Runner.Execute, progress)
+		id, verify, err = prepareTart(ctx, tart, root, cfg.VM.ImageRef, cfg.VM.AppleToolchain, cfg.Runner.Execute, progress)
 	default:
 		return "", fmt.Errorf("unknown VM backend %q", cfg.VM.Backend)
 	}
@@ -146,7 +146,7 @@ func CheckImage(ctx context.Context, cfg config.Config, root, cache string) (str
 			return "", err
 		}
 		if cfg.Runner.Execute {
-			return tart.CheckPreparedImage(ctx, cfg.VM.ImageRef, vm.TartRunnerVersion, vm.TartRunnerSHA256)
+			return tart.CheckPreparedImage(ctx, cfg.VM.ImageRef, vm.TartRunnerVersion, vm.TartRunnerSHA256, cfg.VM.AppleToolchain)
 		}
 		return cfg.VM.ImageRef, tart.CheckImage(ctx, cfg.VM.ImageRef)
 	default:

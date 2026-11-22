@@ -22,6 +22,7 @@ import (
 	"github.com/illusions-lab/Ephemera/internal/macos"
 	"github.com/illusions-lab/Ephemera/internal/orders"
 	"github.com/illusions-lab/Ephemera/internal/qemuplatform"
+	"github.com/illusions-lab/Ephemera/internal/service"
 	"github.com/illusions-lab/Ephemera/internal/status"
 	"golang.org/x/sys/unix"
 )
@@ -73,11 +74,20 @@ func runDoctor(args []string) error {
 	if runtime.GOOS == "darwin" {
 		return diagnoseMac(ctx, *path, *keyPath)
 	}
-	return diagnose(ctx, os.Stdout, doctorPaths{config: *path, key: *keyPath, cache: *cacheDir}, doctorChecks{
+	err := diagnose(ctx, os.Stdout, doctorPaths{config: *path, key: *keyPath, cache: *cacheDir}, doctorChecks{
 		loadConfig: config.Load, readKey: config.ReadKey, probeScaleSet: orders.ProbeScaleSet,
 		checkImage: backend.CheckImage, hostArch: linuxHostArch(),
 		lookPath: exec.LookPath, checkKVM: checkKVM, diskSpace: availableDisk,
 	})
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(*path)
+	if err != nil || !cfg.Runner.Execute {
+		return err
+	}
+	current, _ := status.Read(ctx, host.StatusSocket())
+	return diagnoseCapacity(ctx, cfg, current, os.Stdout)
 }
 
 func diagnose(ctx context.Context, output io.Writer, paths doctorPaths, checks doctorChecks) error {
@@ -116,10 +126,7 @@ func diagnose(ctx context.Context, output io.Writer, paths doctorPaths, checks d
 		report("SKIP", "GitHub / Scale Set", "A valid configuration and App key are required.")
 	} else {
 		probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		found, err := checks.probeScaleSet(probeCtx, orders.Config{
-			ScopeURL: cfg.GitHub.ScopeURL, ScaleSetName: cfg.GitHub.ScaleSetName, RunnerGroup: cfg.RunnerGroup(),
-			AppID: cfg.GitHub.AppID, InstallationID: cfg.GitHub.InstallationID, PrivateKey: key,
-		})
+		found, err := checks.probeScaleSet(probeCtx, runnerRouting(cfg, key))
 		cancel()
 		switch {
 		case errors.Is(err, context.DeadlineExceeded):
@@ -128,7 +135,7 @@ func diagnose(ctx context.Context, output io.Writer, paths doctorPaths, checks d
 			report("FAIL", "GitHub / Scale Set", fmt.Sprintf("%v. Check network access, App installation, and runner management permissions.", err))
 		case !found:
 			report("OK", "GitHub App access", "GitHub authenticated the App and granted runner management access.")
-			report("FAIL", "Scale Set", fmt.Sprintf("%q was not found in the default runner group. Check the name and service startup logs.", cfg.GitHub.ScaleSetName))
+			report("FAIL", "Scale Set", fmt.Sprintf("%q was not found in runner group %q. Check the name and service startup logs.", cfg.GitHub.ScaleSetName, cfg.RunnerGroup()))
 		default:
 			report("OK", "GitHub App access", "GitHub authenticated the App and granted runner management access.")
 			report("OK", "Scale Set", fmt.Sprintf("%q is reachable.", cfg.GitHub.ScaleSetName))
@@ -241,10 +248,20 @@ func diagnoseMac(ctx context.Context, configPath, keyPath string) error {
 	if cfg.VM.Backend != "tart" {
 		return errors.New("macOS runner configuration must use Tart")
 	}
-	if _, err := config.ReadKey(keyPath); err != nil {
+	key, err := config.ReadKey(keyPath)
+	if err != nil {
 		return fmt.Errorf("read GitHub App key: %w", err)
 	}
 	fmt.Println("Configuration and GitHub App key are readable.")
+	probe, cancel := context.WithTimeout(ctx, 15*time.Second)
+	found, err := orders.ProbeScaleSet(probe, runnerRouting(cfg, key))
+	cancel()
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("Scale Set %q was not found in runner group %q; run ephe setup or ephe doctor --repair", cfg.GitHub.ScaleSetName, cfg.RunnerGroup())
+	}
 	if cfg.Runner.Execute {
 		ref, err := backend.CheckImage(ctx, cfg, host.StateDir(), host.ImageCache())
 		if err != nil {
@@ -267,6 +284,41 @@ func diagnoseMac(ctx context.Context, configPath, keyPath string) error {
 	}
 	if current.Intake == "observing" {
 		fmt.Println("Observation mode. To accept jobs, select Execute jobs in ephe config, then run ephe setup.")
+	}
+	if cfg.Runner.Execute {
+		return diagnoseCapacity(ctx, cfg, current, os.Stdout)
+	}
+	return nil
+}
+
+func diagnoseCapacity(ctx context.Context, cfg config.Config, current status.Snapshot, output io.Writer) error {
+	probe, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	total, err := service.HostMemoryMiB(probe)
+	if err != nil {
+		return fmt.Errorf("check host memory: %w", err)
+	}
+	digest, err := config.Digest(cfg)
+	if err != nil {
+		return err
+	}
+	return reportDoctorCapacity(cfg, current, digest, total, output)
+}
+
+func reportDoctorCapacity(cfg config.Config, current status.Snapshot, digest string, total uint64, output io.Writer) error {
+	reserve := cfg.VM.HostReserveMiB
+	if reserve == 0 {
+		reserve = 1024
+	}
+	required := uint64(cfg.VM.MemoryMiB) + uint64(reserve)
+	if required > total {
+		return fmt.Errorf("VM memory plus host reserve requires %d MiB but this host has %d MiB; review VM memory and host reserve in ephe config", required, total)
+	}
+	if current.ConfigDigest == digest && current.Instances != nil && current.Instances.Capacity != nil {
+		printCapacity(output, current)
+		if current.Instances.Capacity.Startable == 0 && current.Instances.CapacityReason != "" {
+			fmt.Fprintf(output, "No VM can start currently: %s.\n", current.Instances.CapacityReason)
+		}
 	}
 	return nil
 }

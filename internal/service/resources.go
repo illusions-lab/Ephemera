@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/illusions-lab/Ephemera/internal/status"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -36,10 +38,7 @@ func (b *resourceBudget) slots(ctx context.Context, now time.Time, starting int,
 	if b.err != nil {
 		return 0, "host resources could not be measured: " + b.err.Error()
 	}
-	reserve := b.memoryReserve
-	if reserve == 0 {
-		reserve = gib
-	}
+	reserve := b.reserve()
 	memSlots := (max(reserve, b.availableMemory) - reserve) / b.memory
 	diskSlots := (max(5*gib, b.availableDisk) - 5*gib) / b.disk
 	committed := uint64(starting)
@@ -55,6 +54,53 @@ func (b *resourceBudget) slots(ctx context.Context, now time.Time, starting int,
 	return int(min(uint64(maxSlots), max(free, committed)-committed)), reason
 }
 
+func (b *resourceBudget) reserve() uint64 {
+	if b.memoryReserve == 0 {
+		return gib
+	}
+	return b.memoryReserve
+}
+
+func (b *resourceBudget) capacity(now time.Time, startable int) *status.Capacity {
+	if b == nil {
+		return nil
+	}
+	view := &status.Capacity{Startable: startable, ReserveMiB: b.reserve() >> 20, VMMemoryMiB: b.memory >> 20}
+	if !b.checked.IsZero() && now.Sub(b.checked) <= 2*time.Second && b.err == nil {
+		available := b.availableMemory >> 20
+		view.AvailableMemoryMiB = &available
+	}
+	return view
+}
+
+// HostMemoryMiB returns the memory visible to the host kernel.
+func HostMemoryMiB(ctx context.Context) (uint64, error) {
+	if runtime.GOOS == "darwin" {
+		out, err := exec.CommandContext(ctx, "/usr/sbin/sysctl", "-n", "hw.memsize").Output()
+		if err != nil {
+			return 0, err
+		}
+		bytes, err := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
+		return bytes >> 20, err
+	}
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, err
+	}
+	kib, err := linuxMemoryKiB(data, "MemTotal:")
+	return kib >> 10, err
+}
+
+func linuxMemoryKiB(data []byte, field string) (uint64, error) {
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 3 && fields[0] == field && fields[2] == "kB" {
+			return strconv.ParseUint(fields[1], 10, 64)
+		}
+	}
+	return 0, fmt.Errorf("%s missing from /proc/meminfo", field)
+}
+
 func sampleResources(ctx context.Context, root string) (uint64, uint64, error) {
 	var fs unix.Statfs_t
 	if err := unix.Statfs(root, &fs); err != nil {
@@ -67,17 +113,8 @@ func sampleResources(ctx context.Context, root string) (uint64, uint64, error) {
 		if err != nil {
 			return 0, 0, err
 		}
-		for _, line := range strings.Split(string(data), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) == 3 && fields[0] == "MemAvailable:" && fields[2] == "kB" {
-				kib, err := strconv.ParseUint(fields[1], 10, 64)
-				if err != nil {
-					return 0, 0, err
-				}
-				mem = kib * 1024
-				return mem, uint64(fs.Bavail) * uint64(fs.Bsize), nil
-			}
-		}
+		kib, err := linuxMemoryKiB(data, "MemAvailable:")
+		return kib << 10, uint64(fs.Bavail) * uint64(fs.Bsize), err
 	case "darwin":
 		probe, cancel := context.WithTimeout(ctx, time.Second)
 		defer cancel()

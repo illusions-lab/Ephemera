@@ -19,16 +19,20 @@ import (
 const TartRunnerVersion = "2.338.2"
 const TartRunnerSHA256 = "25a065af409ffa317ab4d5a3b614dd15fc9c40f2172bc1b35a1b1258e919a388"
 
-func tartImageKey(ref, version, digest string) string {
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(ref+"\n"+version+"\n"+digest)))
+func tartImageKey(ref, version, digest, toolchain string) string {
+	identity := ref + "\n" + version + "\n" + digest
+	if toolchain != "" {
+		identity += "\nverify-xcode-v1:" + toolchain
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(identity)))
 }
 
-func (t *Tart) preparedPath(ref, version, digest string) string {
-	return filepath.Join(t.home, "ephemera-prepared-"+tartImageKey(ref, version, digest))
+func (t *Tart) preparedPath(ref, version, digest, toolchain string) string {
+	return filepath.Join(t.home, "ephemera-prepared-"+tartImageKey(ref, version, digest, toolchain))
 }
 
-func (t *Tart) CheckPreparedImage(ctx context.Context, ref, version, digest string) (string, error) {
-	data, err := os.ReadFile(t.preparedPath(ref, version, digest))
+func (t *Tart) CheckPreparedImage(ctx context.Context, ref, version, digest, toolchain string) (string, error) {
+	data, err := os.ReadFile(t.preparedPath(ref, version, digest, toolchain))
 	if err != nil {
 		return "", err
 	}
@@ -87,8 +91,8 @@ func (t *Tart) checkLocalImage(ctx context.Context, name string) error {
 	return fmt.Errorf("prepared Tart base %s is unavailable", name)
 }
 
-func (t *Tart) PrepareImage(ctx context.Context, ref, version, digest string, progress io.Writer) (string, func() error, error) {
-	path := t.preparedPath(ref, version, digest)
+func (t *Tart) PrepareImage(ctx context.Context, ref, version, digest, toolchain string, progress io.Writer) (string, func() error, error) {
+	path := t.preparedPath(ref, version, digest, toolchain)
 	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return "", nil, err
@@ -111,7 +115,7 @@ func (t *Tart) PrepareImage(ctx context.Context, ref, version, digest string, pr
 	check := func(name string) func() error {
 		return func() error { return t.checkLocalImage(context.Background(), name) }
 	}
-	if name, err := t.CheckPreparedImage(ctx, ref, version, digest); err == nil {
+	if name, err := t.CheckPreparedImage(ctx, ref, version, digest, toolchain); err == nil {
 		return name, check(name), nil
 	}
 	if err := t.CheckImage(ctx, ref); err != nil {
@@ -138,7 +142,7 @@ func (t *Tart) PrepareImage(ctx context.Context, ref, version, digest string, pr
 	if err := t.Prepare(ctx, i); err != nil {
 		return "", nil, err
 	}
-	if err := t.provision(ctx, i); err != nil {
+	if err := t.provision(ctx, i, toolchain); err != nil {
 		return "", nil, err
 	}
 	if err := t.Stop(ctx, i); err != nil {

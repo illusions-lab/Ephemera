@@ -237,3 +237,33 @@ func TestTartCandidateSmoke(t *testing.T) {
 		t.Fatalf("candidate VM was not removed: %v (%v)", entry, err)
 	}
 }
+
+func TestTartAppleToolchainCheck(t *testing.T) {
+	home := t.TempDir()
+	binary := home + "/tart"
+	const fixture = `#!/bin/sh
+set -eu
+test "$1 $2 $3 $4 $5 $6" = "exec ephemera-fixture /usr/bin/sudo -n -u ephemera-runner"
+case "$9" in *xcodebuild*) ;; *) exit 2 ;; esac
+test "${11}" = ios
+printf 'missing iPhoneOS SDK\n' >&2
+exit 1
+`
+	if err := os.WriteFile(binary, []byte(fixture), 0700); err != nil {
+		t.Fatal(err)
+	}
+	tart := &Tart{binary: binary, home: home}
+	err := tart.verifyAppleToolchain(t.Context(), "ephemera-fixture", "ios")
+	if err == nil || !strings.Contains(err.Error(), "missing iPhoneOS SDK") {
+		t.Fatalf("expected the guest toolchain failure, got %v", err)
+	}
+}
+
+func TestTartToolchainChangesPreparedImageKey(t *testing.T) {
+	plain := tartImageKey("image", "version", "digest", "")
+	mac := tartImageKey("image", "version", "digest", "macos")
+	ios := tartImageKey("image", "version", "digest", "ios")
+	if plain == mac || mac == ios || plain == ios || ios == tartImageKey("new-image", "version", "digest", "ios") {
+		t.Fatal("toolchain requirements and image revisions must use distinct cache entries")
+	}
+}

@@ -61,9 +61,10 @@ type Config struct {
 		ImageRef       string `yaml:"image_ref,omitempty"`
 		Profile        string `yaml:"profile,omitempty"`
 		VCPUs          int
-		MemoryMiB      int `yaml:"memory_mib"`
-		DiskGiB        int `yaml:"disk_gib,omitempty"`
-		HostReserveMiB int `yaml:"host_reserve_mib,omitempty"`
+		MemoryMiB      int    `yaml:"memory_mib"`
+		DiskGiB        int    `yaml:"disk_gib,omitempty"`
+		AppleToolchain string `yaml:"apple_toolchain,omitempty"`
+		HostReserveMiB int    `yaml:"host_reserve_mib,omitempty"`
 	}
 	ImageSources map[string]map[string]image.Source `yaml:"image,omitempty"`
 }
@@ -164,6 +165,8 @@ func (cfg Config) Validate() error {
 		return errors.New("tart requires vm.image macos, vm.arch arm64 and an OCI vm.image_ref pinned by SHA-256 digest")
 	case cfg.VM.Backend == "qemu" && cfg.VM.ImageRef != "":
 		return errors.New("vm.image_ref is only supported by tart")
+	case cfg.VM.AppleToolchain != "" && (cfg.VM.Backend != "tart" || (cfg.VM.AppleToolchain != "macos" && cfg.VM.AppleToolchain != "ios")):
+		return errors.New("vm.apple_toolchain must be macos or ios and requires Tart")
 	case cfg.VM.HostReserveMiB != 0 && (cfg.VM.HostReserveMiB < 256 || cfg.VM.HostReserveMiB > math.MaxInt32):
 		return errors.New("vm.host_reserve_mib must be 0 (default) or between 256 and 2147483647")
 	case cfg.VM.DiskGiB != 0 && (cfg.VM.Backend != "qemu" || cfg.VM.DiskGiB < 12 || cfg.VM.DiskGiB > 1024):

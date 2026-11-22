@@ -73,7 +73,8 @@ func TestResourceExhaustionLeavesReadyRunnerEligible(t *testing.T) {
 		},
 	}
 	free, counts := r.reconcile(t.Context(), now)
-	if free != 1 || counts.Waiting != 1 || counts.Starting != 0 || !strings.Contains(counts.CapacityReason, "disk") {
+	if free != 1 || counts.Waiting != 1 || counts.Starting != 0 || counts.Capacity == nil ||
+		counts.Capacity.Startable != 0 || !strings.Contains(counts.CapacityReason, "disk") {
 		t.Fatalf("acquisition slots = %d, instances = %+v", free, counts)
 	}
 }

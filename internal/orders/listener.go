@@ -85,6 +85,11 @@ func Listen(ctx context.Context, cfg Config, logger *slog.Logger, handle func(co
 		return err
 	}
 	reportScaleSetLabels(logger, cfg, set)
+	if cfg.Create {
+		if err := verifyScaleSetLabels(cfg, set); err != nil {
+			return err
+		}
+	}
 	info.ScaleSetID = set.ID
 	client.SetSystemInfo(info)
 
@@ -152,7 +157,27 @@ func ProbeScaleSet(ctx context.Context, cfg Config) (bool, error) {
 		return false, fmt.Errorf("configure GitHub client: %w", err)
 	}
 	set, err := lookupScaleSet(ctx, client, cfg)
-	return set != nil, err
+	if err != nil || set == nil {
+		return false, err
+	}
+	if cfg.Labels == nil {
+		return true, nil
+	}
+	return true, verifyScaleSetLabels(cfg, set)
+}
+
+// EnsureScaleSetLabels applies the requested routing and verifies it with a fresh read.
+func EnsureScaleSetLabels(ctx context.Context, cfg Config) error {
+	client, err := newGitHubClient(cfg, scaleset.SystemInfo{System: "ephemera", Subsystem: "setup"})
+	if err != nil {
+		return err
+	}
+	cfg.Create = true
+	set, err := findScaleSet(ctx, client, cfg)
+	if err != nil {
+		return err
+	}
+	return verifyScaleSetLabels(cfg, set)
 }
 
 func newGitHubClient(cfg Config, info scaleset.SystemInfo, options ...scaleset.HTTPOption) (*scaleset.Client, error) {
@@ -248,23 +273,41 @@ func findScaleSet(ctx context.Context, client scaleSets, cfg Config) (*scaleset.
 		if !changed {
 			return set, nil
 		}
-		updated, err := client.UpdateRunnerScaleSet(ctx, set.ID, &scaleset.RunnerScaleSet{Labels: labels, RunnerSetting: set.RunnerSetting})
-		if err != nil {
+		if _, err := client.UpdateRunnerScaleSet(ctx, set.ID, &scaleset.RunnerScaleSet{Labels: labels, RunnerSetting: set.RunnerSetting}); err != nil {
 			return nil, fmt.Errorf("update Scale Set %q labels: %w", name, err)
 		}
-		if updated.RunnerGroupName == "" {
-			updated.RunnerGroupName = set.RunnerGroupName
+	} else {
+		if _, err := client.CreateRunnerScaleSet(ctx, &scaleset.RunnerScaleSet{
+			Name: name, RunnerGroupID: groupID, Labels: labels,
+			RunnerSetting: scaleset.RunnerSetting{DisableUpdate: true},
+		}); err != nil {
+			return nil, fmt.Errorf("create Scale Set %q: %w", name, err)
 		}
-		return updated, nil
 	}
-	set, err = client.CreateRunnerScaleSet(ctx, &scaleset.RunnerScaleSet{
-		Name: name, RunnerGroupID: groupID, Labels: labels,
-		RunnerSetting: scaleset.RunnerSetting{DisableUpdate: true},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create Scale Set %q: %w", name, err)
+	set, err = lookupScaleSetInGroup(ctx, client, groupID, name)
+	if err == nil && set == nil {
+		err = fmt.Errorf("Scale Set %q was not found after registration", name)
 	}
-	return set, nil
+	return set, err
+}
+
+func verifyScaleSetLabels(cfg Config, set *scaleset.RunnerScaleSet) error {
+	actual := make(map[string]bool, len(set.Labels))
+	for _, label := range set.Labels {
+		actual[strings.ToLower(label.Name)] = true
+	}
+	var missing []string
+	for _, label := range append([]string{cfg.ScaleSetName}, cfg.Labels...) {
+		key := strings.ToLower(label)
+		if !actual[key] {
+			missing = append(missing, label)
+			actual[key] = true
+		}
+	}
+	if len(missing) != 0 {
+		return fmt.Errorf("GitHub Scale Set %q is missing labels %s; reapply the configuration or choose a new Scale Set name in ephe config if GitHub still does not retain them", cfg.ScaleSetName, strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 func reportScaleSetLabels(logger *slog.Logger, cfg Config, set *scaleset.RunnerScaleSet) {

@@ -178,6 +178,9 @@ func prepareMacActivation(ctx context.Context, release string, automatic, resume
 	if _, err := backend.PrepareImage(ctx, cfg, host.StateDir(), host.ImageCache(), logger, os.Stdout); err != nil {
 		return nil, fmt.Errorf("prepare runner image: %w", err)
 	}
+	if err := applyScaleSetRouting(ctx, cfg, key); err != nil {
+		return nil, err
+	}
 	if server && !automatic {
 		if err := runMacCommand(ctx, serverTool, "--apply"); err != nil {
 			return nil, err

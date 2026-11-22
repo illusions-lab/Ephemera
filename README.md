@@ -76,6 +76,15 @@ that threshold, set `vm.host_reserve_mib` in **VM and images** under `ephe confi
 then run `ephe config apply`. The minimum is 256 MiB. Reduce the reserve only
 if the host can run the configured VM and its workloads with that headroom.
 
+After applying routing changes, Ephemera reads the registered labels back
+from GitHub. If GitHub still omits a label after reapplying, choose a new Scale
+Set name in `ephe config` and apply it. The old Scale Set stays registered.
+
+`ephe status` shows how many additional VMs can start now, the configured
+runner limit, and the available host memory, host reserve, and memory per VM.
+`ephe doctor` distinguishes a temporary capacity limit from a VM configuration
+that exceeds the host's total memory.
+
 Changing the runner group selects or creates a Scale Set in the new group.
 
 ```yaml
@@ -157,7 +166,7 @@ log. After upgrading, logs from older versions can still be read at
 
 `ephe status` shows the service, GitHub connection, intake mode, the effective GitHub group and labels, pending configuration changes, and latest job counts. Use `--watch` for continuous updates and `--json` for scripts. Together they emit one JSON object per refresh. If the daemon socket is unavailable, the CLI reports the supervisor state and marks live data as unavailable.
 
-`ephe doctor` checks configuration, GitHub App access, Scale Set connectivity, and the selected VM backend. On Linux it also checks the image cache, QEMU/KVM, and disk space. It never claims jobs or creates a Scale Set.
+`ephe doctor` checks configuration, GitHub App access, Scale Set connectivity and labels, and the selected VM backend. On Linux it also checks the image cache, QEMU/KVM, and disk space. It never claims jobs or creates a Scale Set.
 
 ### GitHub App setup
 

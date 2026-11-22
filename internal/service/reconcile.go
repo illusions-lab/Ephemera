@@ -394,7 +394,7 @@ func (r *reconciler) reconcile(ctx context.Context, now time.Time) (int, status.
 			go r.removeIdle(ctx, i.Instance)
 		}
 	}
-	free := 0
+	free, startable := 0, 0
 	capacityReason := r.imageReason
 	if r.connected && !r.draining && !manual && !r.imageBlocked.Load() && !hasRecovery(r.instances) {
 		local := r.localInstances()
@@ -431,14 +431,14 @@ func (r *reconciler) reconcile(ctx context.Context, now time.Time) (int, status.
 			local++
 			slots--
 		}
-		free = slots
+		free, startable = slots, slots
 		for _, i := range r.instances {
 			if i.phase == waiting && !i.inFlight && i.failures == 0 {
 				free++
 			}
 		}
 	}
-	counts := status.Instances{Draining: manual || r.draining, CapacityReason: capacityReason}
+	counts := status.Instances{Draining: manual || r.draining, CapacityReason: capacityReason, Capacity: r.budget.capacity(now, startable)}
 	for _, i := range r.instances {
 		if i.LocalReclaimed {
 			counts.PendingDeregistration++

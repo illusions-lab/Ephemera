@@ -124,13 +124,12 @@ func (s *fakeScaleSets) GetRunnerGroupByName(_ context.Context, name string) (*s
 
 func (s *fakeScaleSets) UpdateRunnerScaleSet(_ context.Context, id int, set *scaleset.RunnerScaleSet) (*scaleset.RunnerScaleSet, error) {
 	s.updated = set
-	if s.ignoreLabelUpdate {
-		return s.found, nil
-	}
 	result := *s.found
 	result.ID, result.Labels = id, set.Labels
-	s.found = &result
-	return s.found, nil
+	if !s.ignoreLabelUpdate {
+		s.found = &result
+	}
+	return &result, nil
 }
 
 func (s *fakeScaleSets) GetRunnerScaleSet(_ context.Context, groupID int, name string) (*scaleset.RunnerScaleSet, error) {
@@ -139,7 +138,7 @@ func (s *fakeScaleSets) GetRunnerScaleSet(_ context.Context, groupID int, name s
 }
 
 func (s *fakeScaleSets) CreateRunnerScaleSet(_ context.Context, set *scaleset.RunnerScaleSet) (*scaleset.RunnerScaleSet, error) {
-	s.created = set
+	s.created, s.found = set, set
 	return set, nil
 }
 
@@ -208,6 +207,9 @@ func TestScaleSetLabelRegistrationAndIgnoredUpdate(t *testing.T) {
 	set, err = findScaleSet(t.Context(), api, cfg)
 	if err != nil || api.updated == nil || !reflect.DeepEqual(api.updated.Labels, want) || len(set.Labels) != 1 {
 		t.Fatalf("ignored update did not preserve the GitHub response: %+v, %v", set, err)
+	}
+	if err := verifyScaleSetLabels(cfg, set); err == nil || !strings.Contains(err.Error(), "self-hosted, macOS, ARM64") {
+		t.Fatalf("expected a routing error for the persisted labels, got %v", err)
 	}
 	reportScaleSetLabels(logger, cfg, set)
 	if !strings.Contains(output.String(), "GitHub did not return all requested Scale Set labels") ||
