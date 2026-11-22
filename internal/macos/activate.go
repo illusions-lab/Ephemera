@@ -248,7 +248,7 @@ func (a activation) waitReady(ctx context.Context, id string, candidate *Candida
 func launchctl(ctx context.Context, args ...string) error {
 	out, err := exec.CommandContext(ctx, "launchctl", args...).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("launchctl %s: %w: %s", args[0], err, out)
+		return fmt.Errorf("launchctl %s: %w: %s", args[0], errors.Join(err, ctx.Err()), out)
 	}
 	return nil
 }
