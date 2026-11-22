@@ -2,7 +2,7 @@
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 cd "$repo"
-box=$(mktemp -d /private/tmp/ephe-ci.XXXXXX)
+box=$(mktemp -d /tmp/ephe-ci.XXXXXX)
 status_pid=
 cleanup() {
   if [[ -n "$status_pid" ]]; then
@@ -72,6 +72,7 @@ set -eu
 case "$1" in
   --version) echo "$version" ;;
   pull)
+    test ! -e "$TART_HOME/reject-pull"
     printf '%s\n' "$2" > "$TART_HOME/fixture-ref"
     printf '%s\n' "$version" >> "$TART_HOME/fixture-pulls"
     ;;
@@ -107,6 +108,11 @@ if install a first; then exit 1; fi
 [[ ! -L "$root/current" ]]
 rm "$root/dev-loaded"
 
+printf '%s\n' "$base_version" > "$root/reject-version"
+if install a first; then exit 1; fi
+[[ ! -e "$plist" && ! -L "$root/current" && ! -f "$root/loaded" ]]
+[[ ! -e "$root/.activation-transaction.json" && -s "$root/config.yaml" ]]
+rm "$root/reject-version"
 install a first
 previous=$(readlink "$root/current")
 [[ "$(cat "$root/loaded")" == "$previous" ]]
@@ -128,6 +134,12 @@ grep -q 'scale_set_name: edited' "$edit_snapshot"
 # Replacing the unversioned preseed must leave the active Tart and the old
 # credential intact, even when a candidate has prepared a new image and key.
 write_tart 99.0.0
+touch "$root/state/tart/reject-pull"
+starts=$(cat "$root/starts")
+if install b upgrade; then exit 1; fi
+cmp "$plist" "$box/previous.plist"
+[[ "$(cat "$root/starts")" == "$starts" && "$(cat "$root/loaded")" == "$previous" ]]
+rm "$root/state/tart/reject-pull"
 printf '99.0.0\n' > "$root/reject-version"
 if install b upgrade; then exit 1; fi
 cmp "$plist" "$box/previous.plist"

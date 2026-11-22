@@ -251,6 +251,45 @@ func TestActivationRestoresLoadedAndUnloadedServices(t *testing.T) {
 	}
 }
 
+func TestActivationRetainsJournalWhenRecoveryFails(t *testing.T) {
+	a := testActivation(t)
+	ctx := context.Background()
+	first := testCandidate("first")
+	oldRelease, newRelease := filepath.Join(a.root, "first"), filepath.Join(a.root, "rejected")
+	fixtureStatus(t, a, func() status.Snapshot {
+		return readySnapshot(plistActivationID(a.plist), first)
+	})
+	if err := a.run(ctx, oldRelease, activateCandidate(first)); err != nil {
+		t.Fatal(err)
+	}
+	oldPlist := readActivationFile(t, a.plist)
+	for _, release := range []string{oldRelease, newRelease} {
+		if err := os.Mkdir(release, 0700); err != nil {
+			t.Fatal(err)
+		}
+		writeActivationFile(t, filepath.Join(release, "fail-bootstrap"), "", 0600)
+	}
+	journal := filepath.Join(a.root, ".activation-transaction.json")
+	err := a.run(ctx, newRelease, activateCandidate(testCandidate("candidate")))
+	if err == nil || !strings.Contains(err.Error(), journal) {
+		t.Fatalf("expected rollback error identifying %s, got %v", journal, err)
+	}
+	if _, err := os.Stat(journal); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(oldRelease, "fail-bootstrap")); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.run(ctx, oldRelease, func() (*Candidate, error) { return nil, nil }); err != nil {
+		t.Fatal(err)
+	}
+	assertCurrent(t, a, oldRelease)
+	assertMissing(t, journal)
+	if readActivationFile(t, a.plist) != oldPlist || readActivationFile(t, filepath.Join(a.root, "loaded")) != filepath.Join(oldRelease, "ephemerad")+"\n" {
+		t.Fatal("next activation did not finish recovering the previous service")
+	}
+}
+
 func TestActivationRecoversAfterKill(t *testing.T) {
 	a := testActivation(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

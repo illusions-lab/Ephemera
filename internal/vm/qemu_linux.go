@@ -31,21 +31,26 @@ func NewQEMU(cfg QEMUConfig) (Backend, error) {
 	if err != nil {
 		return nil, err
 	}
-	binary, err := exec.LookPath(platform.Binary)
-	if err != nil {
-		return nil, err
-	}
-	binary, err = filepath.Abs(binary)
-	if err != nil {
-		return nil, err
-	}
-	binary, err = filepath.EvalSymlinks(binary)
-	return &qemu{QEMUConfig: cfg, binary: binary, platform: platform}, err
+	return &qemu{QEMUConfig: cfg, platform: platform}, nil
 }
 
 func (q *qemu) Check(_ context.Context) error {
 	if os.Geteuid() == 0 {
 		return errors.New("run QEMU execution under an unprivileged service account")
+	}
+	// Finding the executable is only required for new VMs. Recovery
+	// recognizes old processes by their recorded instance identity.
+	binary, err := exec.LookPath(q.platform.Binary)
+	if err != nil {
+		return err
+	}
+	binary, err = filepath.Abs(binary)
+	if err != nil {
+		return err
+	}
+	q.binary, err = filepath.EvalSymlinks(binary)
+	if err != nil {
+		return err
 	}
 	for _, tool := range []string{"qemu-img", "cloud-localds"} {
 		if _, err := exec.LookPath(tool); err != nil {

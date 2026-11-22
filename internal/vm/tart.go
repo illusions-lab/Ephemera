@@ -58,10 +58,19 @@ func findTart() (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("read release Tart binding: %w", err)
 		}
-		if target != macos.TartBinary() && target != macos.BundledTartBinary() {
-			return "", fmt.Errorf("release Tart binding does not match the embedded Tart %s manifest", macos.TartVersion)
+		// The shell and launchd can spell the user's home via different
+		// symlinks. Resolve the directories while retaining the bound filename.
+		targetDir, err := filepath.EvalSymlinks(filepath.Dir(target))
+		if err != nil {
+			return "", fmt.Errorf("resolve release Tart binding: %w", err)
 		}
-		return target, nil
+		for _, expected := range []string{macos.TartBinary(), macos.BundledTartBinary()} {
+			dir, err := filepath.EvalSymlinks(filepath.Dir(expected))
+			if err == nil && targetDir == dir && filepath.Base(target) == filepath.Base(expected) {
+				return filepath.Join(dir, filepath.Base(expected)), nil
+			}
+		}
+		return "", fmt.Errorf("release Tart binding does not match the embedded Tart %s manifest", macos.TartVersion)
 	}
 
 	for _, binary := range []string{macos.TartBinary(), macos.PrebuiltTartBinary()} {

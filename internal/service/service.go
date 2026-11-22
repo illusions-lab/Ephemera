@@ -120,6 +120,9 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 		return fmt.Errorf("determine session owner: %w", err)
 	}
 	prepareCurrent := func() (string, func() error, error) {
+		if cfg.Runner.Execute {
+			current.Instances = &status.Instances{}
+		}
 		if err := report("PreparingImage"); err != nil {
 			return "", nil, err
 		}
