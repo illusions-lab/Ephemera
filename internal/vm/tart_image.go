@@ -3,6 +3,7 @@ package vm
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -40,6 +41,37 @@ func (t *Tart) checkLocalImage(ctx context.Context, name string) error {
 	parsed, err := uuid.Parse(id)
 	if !ok || err != nil || parsed.String() != id {
 		return errors.New("invalid prepared Tart image identity")
+	}
+	directory := filepath.Join(t.home, "vms", name)
+	cfg, err := os.ReadFile(filepath.Join(directory, "config.json"))
+	if err != nil {
+		return fmt.Errorf("read prepared Tart base configuration: %w", err)
+	}
+	var metadata map[string]json.RawMessage
+	if err := json.Unmarshal(cfg, &metadata); err != nil || len(metadata) == 0 {
+		return errors.New("prepared Tart base configuration is invalid")
+	}
+	checkFile := func(filename string) error {
+		path := filepath.Join(directory, filename)
+		file, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if !file.Mode().IsRegular() || file.Size() == 0 {
+			return fmt.Errorf("invalid Tart base file %s", filename)
+		}
+		return nil
+	}
+	if err := checkFile("nvram.bin"); err != nil {
+		return err
+	}
+	if err := checkFile("disk.img"); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := errors.Join(checkFile("manifest.json"), checkFile("overlay.asif")); err != nil {
+			return err
+		}
 	}
 	check, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/actions/scaleset"
 	"github.com/illusions-lab/Ephemera/internal/imagechannel"
+	"github.com/illusions-lab/Ephemera/internal/orders"
 	"github.com/illusions-lab/Ephemera/internal/vm"
 )
 
@@ -124,4 +126,50 @@ func TestImageWatcherReportsUnavailableLocalChannel(t *testing.T) {
 		cancel()
 		<-done
 	})
+}
+
+func TestImageAvailabilityTransitionsPreserveQuarantine(t *testing.T) {
+	updates := &imageUpdates{}
+	r := &reconciler{images: updates}
+	r.setImage(preparedImage{id: "base"})
+	active := r.active.Load()
+	r.apply(runnerEvent{kind: imageUnavailable, source: active})
+	if !r.imageBlocked.Load() {
+		t.Fatal("accepted image after a transient probe failure")
+	}
+	r.apply(runnerEvent{kind: imageAvailable, source: active})
+	if r.imageBlocked.Load() {
+		t.Fatal("successful probe did not restore image availability")
+	}
+	updates.state.Failures = 3
+	r.blockFailedImage()
+	r.apply(runnerEvent{kind: imageUnavailable, source: active})
+	r.apply(runnerEvent{kind: imageAvailable, source: active})
+	if !r.imageBlocked.Load() || r.imageReason != failedImageQuarantine {
+		t.Fatal("existence probe cleared a base quarantined for guest failure")
+	}
+}
+
+func TestLateCompletionResetsCurrentImageFailureCount(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	updates := &imageUpdates{
+		path:   filepath.Join(t.TempDir(), "state.json"),
+		logger: logger,
+		state:  updateState{Failures: 2},
+	}
+	r := &reconciler{images: updates, logger: logger}
+	r.setImage(preparedImage{id: "base"})
+	instance := vm.Instance{ID: "finished-runner", Image: "base", RunnerID: 91}
+	r.instances = map[string]*instanceState{instance.ID: {Instance: instance, phase: running}}
+	r.apply(runnerEvent{kind: exited, id: instance.ID})
+	r.apply(runnerEvent{kind: cleaned, id: instance.ID})
+	if updates.state.Failures != 2 {
+		t.Fatal("process exit without terminal event reset image failures")
+	}
+	r.apply(runnerEvent{kind: statistics, update: orders.Update{
+		Completed: []*scaleset.JobCompleted{{RunnerID: instance.RunnerID}},
+	}})
+	if updates.state.Failures != 0 {
+		t.Fatal("GitHub completion after local exit did not reset image failures")
+	}
 }

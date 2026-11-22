@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const awaitingImageRepair = "runner image is unavailable and awaiting repair"
+
 func (r *reconciler) monitorImage(ctx context.Context, baseline func(context.Context) (string, func() error, error)) {
 	timer := time.NewTimer(2 * time.Second)
 	defer timer.Stop()
@@ -17,6 +19,11 @@ func (r *reconciler) monitorImage(ctx context.Context, baseline func(context.Con
 		}
 		active := r.active.Load()
 		if active == nil || active.check == nil || active.check() == nil {
+			if active != nil && r.imageBlocked.Load() {
+				if err := r.submit(ctx, runnerEvent{kind: imageAvailable, source: active}); err != nil {
+					return
+				}
+			}
 			failures = 0
 			timer.Reset(2 * time.Second)
 			continue

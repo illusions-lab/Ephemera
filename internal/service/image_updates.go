@@ -298,6 +298,7 @@ func ensureImageSpace(path string) error {
 
 func (r *reconciler) setImage(p preparedImage) {
 	r.active.Store(&p)
+	clear(r.exitedRunners)
 	r.template.Image = p.id
 	r.imageBlocked.Store(false)
 	r.imageReason = ""
@@ -324,7 +325,7 @@ func (r *reconciler) pruneImages() {
 	for _, id := range u.state.Retired {
 		keep := id == r.template.Image || id == u.previous.id || id == u.baseline.id
 		for _, instance := range r.instances {
-			keep = keep || instance.Image == id
+			keep = keep || !instance.LocalReclaimed && instance.Image == id
 		}
 		if !keep {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -421,13 +422,20 @@ func (r *reconciler) imageOutcome(i vm.Instance, event runnerEvent) {
 		return
 	}
 	if err := u.save(next); err != nil {
-		u.logger.Error("Save image startup outcome", "error", err)
+		u.logger.Error("Save image outcome", "error", err)
+		return
+	}
+	if next.Failures == 0 && r.imageReason == failedImageQuarantine {
+		r.imageReason = ""
+		r.imageBlocked.Store(false)
 	}
 }
 
+const failedImageQuarantine = "runner image failed repeatedly and no verified rollback is available"
+
 func (r *reconciler) blockFailedImage() {
 	r.imageBlocked.Store(true)
-	r.imageReason = "runner image failed repeatedly and no verified rollback is available"
+	r.imageReason = failedImageQuarantine
 }
 
 func (u *imageUpdates) snapshot() *status.ImageUpdate {

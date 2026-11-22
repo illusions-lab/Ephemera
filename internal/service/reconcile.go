@@ -55,6 +55,7 @@ const (
 	imageChecked
 	jobTerminal
 	imageUnavailable
+	imageAvailable
 	imageRepaired
 	drainStatus
 )
@@ -92,6 +93,7 @@ type reconciler struct {
 	logger                      *slog.Logger
 	events                      chan runnerEvent
 	instances                   map[string]*instanceState
+	exitedRunners               map[int]vm.Instance
 	connected, draining         bool
 	retryStart                  time.Time
 	startFailures               int
@@ -220,6 +222,10 @@ func (r *reconciler) apply(event runnerEvent) {
 			if job == nil || job.RunnerID <= 0 {
 				continue
 			}
+			if instance, ok := r.exitedRunners[job.RunnerID]; ok {
+				delete(r.exitedRunners, job.RunnerID)
+				r.imageOutcome(instance, runnerEvent{kind: jobTerminal})
+			}
 			for _, i := range r.instances {
 				if i.RunnerID == job.RunnerID {
 					if i.phase == running || i.phase == waiting || i.phase == starting {
@@ -235,7 +241,16 @@ func (r *reconciler) apply(event runnerEvent) {
 	case imageUnavailable:
 		if event.source != nil && event.source == r.active.Load() {
 			r.imageBlocked.Store(true)
-			r.imageReason = "runner image is unavailable and awaiting repair"
+			r.imageReason = awaitingImageRepair
+		}
+	case imageAvailable:
+		if event.source == r.active.Load() && r.imageReason == awaitingImageRepair {
+			if r.images != nil && r.images.state.Failures >= 3 {
+				r.blockFailedImage()
+			} else {
+				r.imageReason = ""
+				r.imageBlocked.Store(false)
+			}
 		}
 	case imageRepaired:
 		r.repairImage(event)
@@ -271,6 +286,20 @@ func (r *reconciler) apply(event runnerEvent) {
 		}
 		if i.phase < finishing {
 			r.imageOutcome(i.Instance, event)
+			if i.RunnerID > 0 && i.phase >= waiting && !errors.Is(event.err, vm.ErrImageInfrastructure) {
+				if r.exitedRunners == nil {
+					r.exitedRunners = make(map[int]vm.Instance)
+				}
+				// A completion can follow local exit and deregistration. Keep
+				// bounded attribution even after the local record is gone.
+				if len(r.exitedRunners) >= 4096 {
+					for id := range r.exitedRunners {
+						delete(r.exitedRunners, id)
+						break
+					}
+				}
+				r.exitedRunners[i.RunnerID] = i.Instance
+			}
 		}
 		if i.phase == starting {
 			r.startFailures++
@@ -382,10 +411,17 @@ func (r *reconciler) reconcile(ctx context.Context, now time.Time) (int, status.
 				r.logger.Error("Could not generate instance identity", "error", err)
 				break
 			}
+			r.gate.mu.Lock()
+			if r.gate.closed {
+				r.gate.mu.Unlock()
+				slots = 0
+				break
+			}
 			i := r.template
 			i.ID, i.Resource = id.String(), runnerName(id.String())
 			startCtx, cancel := context.WithTimeout(ctx, r.startupTimeout)
 			r.instances[i.ID] = &instanceState{Instance: i, phase: starting, launching: true, cancel: cancel, deadline: now.Add(r.startupTimeout)}
+			r.gate.mu.Unlock()
 			go r.launch(ctx, startCtx, i, r.active.Load())
 			local++
 			slots--

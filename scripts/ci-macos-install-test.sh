@@ -92,34 +92,37 @@ if source == "oci":
 else:
     entries = [
         {"Name": item.name, "Running": (item / "running").exists()}
-        for item in (root / "fixture-vms").glob("ephemera-*")
+        for item in (root / "vms").glob("ephemera-*")
     ]
 print(json.dumps(entries))
 PYTHON
     ;;
   clone)
-    mkdir -p "$TART_HOME/fixture-vms"
+    mkdir -p "$TART_HOME/vms"
     case "$2" in
       *@*)
         test -f "$TART_HOME/fixture-oci/${2##*@}"
-        mkdir "$TART_HOME/fixture-vms/$3"
+        mkdir "$TART_HOME/vms/$3"
+        printf '{"version":1}\n' > "$TART_HOME/vms/$3/config.json"
+        printf 'disk\n' > "$TART_HOME/vms/$3/disk.img"
+        printf 'nvram\n' > "$TART_HOME/vms/$3/nvram.bin"
         ;;
       *)
-        test -f "$TART_HOME/fixture-vms/$2/provisioned"
-        cp -R "$TART_HOME/fixture-vms/$2" "$TART_HOME/fixture-vms/$3"
+        test -f "$TART_HOME/vms/$2/provisioned"
+        cp -R "$TART_HOME/vms/$2" "$TART_HOME/vms/$3"
         ;;
     esac
     ;;
-  set) test -d "$TART_HOME/fixture-vms/$2" ;;
+  set) test -d "$TART_HOME/vms/$2" ;;
   run)
-    vm="$TART_HOME/fixture-vms/${!#}"
+    vm="$TART_HOME/vms/${!#}"
     touch "$vm/running"
     while [[ -f "$vm/running" ]]; do sleep 0.05; done
     ;;
-  stop) rm -f "$TART_HOME/fixture-vms/$4/running" ;;
-  delete) rm -rf "$TART_HOME/fixture-vms/$2" ;;
+  stop) rm -f "$TART_HOME/vms/$4/running" ;;
+  delete) rm -rf "$TART_HOME/vms/$2" ;;
   exec)
-    vm="$TART_HOME/fixture-vms/$2"
+    vm="$TART_HOME/vms/$2"
     test -f "$vm/running"
     case "$*" in
       *Runner.Listener*--version)
