@@ -272,7 +272,7 @@ sudo systemctl stop ephemera.service
 # Change the saved boot ID to exercise early boot recovery on this host.
 echo previous-boot | sudo tee /opt/ephemera/transaction/boot-id >/dev/null
 sudo systemctl daemon-reload
-sudo systemctl start ephemera.service
+sudo systemctl start ephemera-recover-boot.service ephemera.service
 assert_recovered
 
 sudo bash scripts/install.sh --bundle "$work/v1"

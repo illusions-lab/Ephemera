@@ -68,11 +68,11 @@ if [[ "$mode" == check ]]; then
   exit
 fi
 [[ "$(uname -s)" == Linux && "$EUID" -eq 0 ]] || die 'installation requires Linux and root'
-if [[ "$recovery_mode" != --recover-boot ]] && { [[ ! -d /run/systemd/system ]] || ! command -v systemctl >/dev/null; }; then die 'installation requires a running systemd instance'; fi
+if [[ ! -d /run/systemd/system ]] || ! command -v systemctl >/dev/null; then die 'installation requires a running systemd instance'; fi
 mkdir -p /run/lock
 exec 9>/run/lock/ephemera-install.lock
 if ! flock -n 9; then
-  [[ "$recovery_mode" == --recover-boot || "$recovery_mode" == --guard-start ]] && exit 0
+  [[ "$recovery_mode" == --guard-start ]] && exit 0
   die 'another Ephemera install is in progress'
 fi
 mkdir -p "$root/releases"
@@ -123,17 +123,24 @@ if [[ "$recovery_mode" == --guard-start ]]; then
   fi
   exit 0
 fi
+temp=$(mktemp -d "$root/.install.XXXXXXXX")
+trap 'rm -rf -- "$temp"' EXIT
 if [[ "$recovery_mode" == --recover-boot ]]; then
-  # Generators also run during daemon-reload. Restrict this path to boot.
   if [[ -f "$txn/boot-id" && "$(cat "$txn/boot-id")" != "$(cat /proc/sys/kernel/random/boot_id)" ]]; then
+    # A start job can already be ordered behind this recovery unit. Cancel
+    # it if the candidate installed a unit or enabled a previously disabled one.
+    if [[ ! -f "$txn/unit" || -f "$txn/disable" ]]; then
+      systemctl --no-block stop ephemera.service 9>&-
+    fi
     restore_files || die 'boot recovery could not restore the previous installation'
-    rm -rf "$txn"
-    sync -f "$root"
+    systemctl daemon-reload
+    if [[ -f "$txn/active" ]]; then
+      systemctl --no-block start ephemera.service 9>&-
+    fi
+    finish_transaction
   fi
   exit 0
 fi
-temp=$(mktemp -d "$root/.install.XXXXXXXX")
-trap 'rm -rf -- "$temp"' EXIT
 rollback || die 'rollback failed; transaction and releases retained for repair'
 if [[ "$recovery_mode" == --recover ]]; then exit 0; fi
 
@@ -242,16 +249,25 @@ if ! id ephemera >/dev/null 2>&1; then
   useradd --system --user-group --home-dir /var/lib/ephemera --shell /usr/sbin/nologin ephemera
 fi
 # Install the independent recovery entry before recording or changing the service.
-install -d -m 0755 /etc/systemd/system-generators
 recovery_source=$0
 if [[ ! -f "$recovery_source" ]]; then recovery_source=$staged/install.sh; fi
 install -m 0755 "$recovery_source" "$root/recover-install.new"
 mv -Tf "$root/recover-install.new" "$root/recover-install"
-cat > "$temp/recovery-generator" <<'GENERATOR'
-#!/usr/bin/env bash
-exec /opt/ephemera/recover-install --recover-boot
-GENERATOR
-install -m 0755 "$temp/recovery-generator" /etc/systemd/system-generators/ephemera-recovery
+cat > "$temp/recovery-boot-unit" <<'UNIT'
+[Unit]
+Description=Restore Ephemera installation before daemon startup
+ConditionPathExists=/opt/ephemera/transaction
+Before=ephemera.service
+RequiresMountsFor=/opt/ephemera
+[Service]
+Type=oneshot
+ExecStart=/opt/ephemera/recover-install --recover-boot
+[Install]
+WantedBy=multi-user.target
+UNIT
+install -m 0644 "$temp/recovery-boot-unit" /etc/systemd/system/ephemera-recover-boot.service
+install -d -m 0755 /etc/systemd/system/multi-user.target.wants
+ln -sfn ../ephemera-recover-boot.service /etc/systemd/system/multi-user.target.wants/ephemera-recover-boot.service
 cat > "$temp/recovery-unit" <<'UNIT'
 [Unit]
 Description=Recover an interrupted Ephemera installation
