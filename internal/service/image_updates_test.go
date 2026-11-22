@@ -45,7 +45,7 @@ func TestImageUpdatePersistsSwitchAndRollback(t *testing.T) {
 
 	// Failures from the old VM and from GitHub registration must not roll back.
 	for range 4 {
-		r.imageOutcome(oldInstance, runnerEvent{kind: exited, stage: "start VM"})
+		r.imageOutcome(oldInstance, runnerEvent{kind: exited, stage: "start VM", err: vm.ErrImageInfrastructure})
 		r.imageOutcome(r.template, runnerEvent{kind: exited, stage: "register runner"})
 	}
 	if updates.state.Failures != 0 {
@@ -62,11 +62,11 @@ func TestImageUpdatePersistsSwitchAndRollback(t *testing.T) {
 	r.setImage(active)
 	failed := r.template
 	for range 2 {
-		r.imageOutcome(failed, runnerEvent{kind: exited, stage: "start VM"})
+		r.imageOutcome(failed, runnerEvent{kind: exited, stage: "start VM", err: vm.ErrImageInfrastructure})
 	}
-	r.imageOutcome(failed, runnerEvent{kind: ready})
+	r.imageOutcome(failed, runnerEvent{kind: jobTerminal})
 	for range 3 {
-		r.imageOutcome(failed, runnerEvent{kind: exited, stage: "start VM"})
+		r.imageOutcome(failed, runnerEvent{kind: exited, stage: "start VM", err: vm.ErrImageInfrastructure})
 	}
 	if r.template.Image != "first" || !restarted.state.RolledBack {
 		t.Fatal("did not roll back after three consecutive failures")

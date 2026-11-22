@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/illusions-lab/Ephemera/internal/host"
@@ -58,6 +59,7 @@ type Config struct {
 		Profile   string `yaml:"profile,omitempty"`
 		VCPUs     int
 		MemoryMiB int `yaml:"memory_mib"`
+		DiskGiB   int `yaml:"disk_gib,omitempty"`
 	}
 	ImageSources map[string]map[string]image.Source `yaml:"image,omitempty"`
 }
@@ -124,6 +126,8 @@ func (cfg Config) Validate() error {
 		return errors.New("tart requires vm.image macos, vm.arch arm64 and an OCI vm.image_ref pinned by SHA-256 digest")
 	case cfg.VM.Backend == "qemu" && cfg.VM.ImageRef != "":
 		return errors.New("vm.image_ref is only supported by tart")
+	case cfg.VM.DiskGiB != 0 && (cfg.VM.Backend != "qemu" || cfg.VM.DiskGiB < 12 || cfg.VM.DiskGiB > 1024):
+		return errors.New("vm.disk_gib must be between 12 and 1024 and requires QEMU")
 	case strings.TrimSpace(cfg.VM.Image) == "" || cfg.VM.VCPUs <= 0 || cfg.VM.MemoryMiB <= 0:
 		return errors.New("vm.image is required and vm.vcpus and vm.memory_mib must be positive")
 	}
@@ -193,6 +197,40 @@ func WriteSetup(dir string, configData, keyData []byte) error {
 	return writeNewFile(filepath.Join(dir, "config.yaml"), configData, 0644)
 }
 
+// RecoverSetupKey replaces an uncommitted credential after authenticating it.
+// The caller must have verified that the service has never been installed.
+func RecoverSetupKey(dir string, configData, keyData []byte, validate func() error) error {
+	destination := filepath.Join(dir, "config.yaml")
+	if _, err := os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("residual key recovery requires %s to be absent", destination)
+	}
+	credentials := filepath.Join(dir, "credentials")
+	keyPath := filepath.Join(credentials, "github-app.pem")
+	for path, mode := range map[string]os.FileMode{credentials: os.ModeDir | 0700, keyPath: 0600} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != uint32(os.Geteuid()) || info.Mode() != mode {
+			return fmt.Errorf("invalid owner or permissions for %s", path)
+		}
+	}
+	saved, err := os.ReadFile(keyPath)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(saved, keyData) {
+		if err := validate(); err != nil {
+			return err
+		}
+		if err := writeConfigFile(keyPath, keyData, 0600, os.Rename); err != nil {
+			return err
+		}
+	}
+	return writeNewFile(destination, configData, 0644)
+}
+
 func Replace(path string, data []byte) error {
 	return writeConfigFile(path, data, 0644, os.Rename)
 }
@@ -209,8 +247,9 @@ func writeConfigFile(path string, data []byte, mode os.FileMode, publish func(st
 	defer os.Remove(temp.Name())
 	_, writeErr := temp.Write(data)
 	modeErr := temp.Chmod(mode)
+	syncErr := temp.Sync()
 	closeErr := temp.Close()
-	if err := errors.Join(writeErr, modeErr, closeErr); err != nil {
+	if err := errors.Join(writeErr, modeErr, syncErr, closeErr); err != nil {
 		return err
 	}
 	return publish(temp.Name(), path)
@@ -250,6 +289,6 @@ func (cfg Config) ImageConfig() (image.Config, error) {
 		}
 	}
 	return image.Config{
-		Platform: platform, Source: source, VCPUs: cfg.VM.VCPUs, MemoryMiB: cfg.VM.MemoryMiB,
+		Platform: platform, Source: source, VCPUs: cfg.VM.VCPUs, MemoryMiB: cfg.VM.MemoryMiB, DiskGiB: cfg.VM.DiskGiB,
 	}, nil
 }

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/illusions-lab/Ephemera/internal/macos"
 )
 
@@ -176,7 +177,10 @@ func (t *Tart) Prepare(ctx context.Context, i Instance) error {
 	if err := t.owns(i); err != nil {
 		return err
 	}
-	if err := t.command(ctx, "clone", i.Image, i.Resource).Run(); err != nil {
+	clone := t.command(ctx, "clone", i.Image, i.Resource)
+	var diagnostic boundedVMOutput
+	clone.Stderr = &diagnostic
+	if err := tartDiagnostic(clone.Run(), diagnostic.output.String()); err != nil {
 		return fmt.Errorf("clone Tart image: %w", err)
 	}
 	return t.command(ctx, "set", i.Resource, "--cpu", strconv.Itoa(t.cpu), "--memory", strconv.Itoa(t.memory)).Run()
@@ -200,20 +204,33 @@ func (t *Tart) Start(startup context.Context, i Instance, jit string) (Process, 
 
 func (t *Tart) startVM(resource string) (<-chan error, error) {
 	run := t.command(context.Background(), "run", "--no-graphics", "--no-audio", "--no-usb-accessories", "--no-clipboard", resource)
+	var diagnostic boundedVMOutput
+	run.Stderr = &diagnostic
 	if err := run.Start(); err != nil {
 		return nil, err
 	}
 	vmExit := make(chan error, 1)
-	go func() { vmExit <- run.Wait() }()
+	go func() { vmExit <- tartDiagnostic(run.Wait(), diagnostic.output.String()) }()
 	return vmExit, nil
+}
+
+func tartDiagnostic(err error, output string) error {
+	if err == nil || strings.TrimSpace(output) == "" {
+		return err
+	}
+	err = fmt.Errorf("%w: Tart stderr: %s", err, strings.TrimSpace(output))
+	diagnostic := strings.ToLower(output)
+	for _, signature := range []string{"disk image is corrupted", "disk image is invalid", "invalid disk image", "corrupt disk image"} {
+		if strings.Contains(diagnostic, signature) {
+			return errors.Join(ErrImageInfrastructure, err)
+		}
+	}
+	return err
 }
 
 func (t *Tart) runGuest(startup context.Context, i Instance, jit string, ready chan struct{}, vmExit <-chan error) error {
 	if err := t.waitGuestAgent(startup, i.Resource, vmExit); err != nil {
 		return err
-	}
-	if err := t.command(startup, "exec", i.Resource, "/usr/bin/sudo", "-n", "/bin/sh", "-c", tartProvision, "ephemera-provision", i.RunnerVersion, i.RunnerSHA256).Run(); err != nil {
-		return fmt.Errorf("prepare macOS runner: %w", err)
 	}
 	if err := startup.Err(); err != nil {
 		return err
@@ -347,6 +364,10 @@ func (t *Tart) ValidateCandidate(ctx context.Context, i Instance) (result error)
 	if err := t.Prepare(ctx, i); err != nil {
 		return err
 	}
+	return t.provision(ctx, i)
+}
+
+func (t *Tart) provision(ctx context.Context, i Instance) error {
 	vmExit, err := t.startVM(i.Resource)
 	if err != nil {
 		return err
@@ -368,15 +389,20 @@ func (t *Tart) ValidateCandidate(ctx context.Context, i Instance) (result error)
 }
 
 func (t *Tart) RemoveCachedImage(ctx context.Context, ref string) error {
-	if !strings.HasPrefix(ref, "ghcr.io/cirruslabs/macos-tahoe-base@sha256:") {
+	id, ok := strings.CutPrefix(ref, "ephemera-base-")
+	parsed, err := uuid.Parse(id)
+	if !ok || err != nil || parsed.String() != id {
 		return errors.New("refusing to remove unmanaged Tart image")
 	}
-	entries, err := t.list(ctx, "oci")
+	entries, err := t.list(ctx, "local")
 	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
 		if entry.Name == ref {
+			if entry.Running {
+				return errors.New("cannot remove running Tart base")
+			}
 			return t.command(ctx, "delete", ref).Run()
 		}
 	}

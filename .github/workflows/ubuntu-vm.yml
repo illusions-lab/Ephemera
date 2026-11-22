@@ -2,6 +2,13 @@ name: Ubuntu VM acceptance
 on:
   workflow_dispatch:
   workflow_call:
+    inputs:
+      checkout_ref:
+        type: string
+        required: false
+      linux_amd64_only:
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -9,15 +16,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { arch: amd64, runner: ubuntu-24.04, qemu: qemu-system-x86 }
-          - { arch: arm64, runner: ubuntu-24.04-arm, qemu: "qemu-system-arm qemu-efi-aarch64" }
+        include: ${{ fromJSON(inputs.linux_amd64_only && '[{"arch":"amd64","runner":"ubuntu-24.04","qemu":"qemu-system-x86"}]' || '[{"arch":"amd64","runner":"ubuntu-24.04","qemu":"qemu-system-x86"},{"arch":"arm64","runner":"ubuntu-24.04-arm","qemu":"qemu-system-arm qemu-efi-aarch64"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          ref: ${{ inputs.checkout_ref || github.sha }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -28,6 +34,7 @@ jobs:
           args: release --snapshot --clean
       - name: Verify and unpack snapshot
         run: |
+          expected_commit=$(git rev-parse HEAD)
           cd dist
           sha256sum -c checksums.txt
           mkdir "$RUNNER_TEMP/vm-bundle"
@@ -37,7 +44,7 @@ jobs:
           test -s install.sh
           identity=$(./ephemera version)
           test "$identity" = "$(./ephemerad --version)"
-          test "${identity##* }" = "$GITHUB_SHA"
+          test "${identity##* }" = "$expected_commit"
       - name: Install image preparation tools
         run: |
           sudo apt-get update

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -58,11 +59,25 @@ func (c cache) prepare(ctx context.Context, key string, build func(context.Conte
 	}
 	defer lock.Close()
 
-	target := filepath.Join(c.root, key)
-	if _, err := os.Lstat(target); err == nil {
-		return verifiedImage(ctx, target)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return Image{}, err
+	target, err := cacheTarget(c.root, key)
+	repair := err != nil || target != filepath.Join(c.root, key)
+	if err != nil {
+		// Leave any path named by an invalid index alone. Replace only the
+		// index after a fresh copy has passed validation.
+		target = filepath.Join(c.root, key)
+	}
+	_, statErr := os.Lstat(target)
+	if statErr == nil {
+		cached, verifyErr := verifiedImage(ctx, target)
+		if verifyErr == nil && err == nil {
+			return cached, nil
+		}
+		if ctx.Err() != nil {
+			return Image{}, ctx.Err()
+		}
+		repair = true
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return Image{}, statErr
 	}
 	work, err := os.MkdirTemp(c.root, ".prepare-")
 	if err != nil {
@@ -81,19 +96,69 @@ func (c cache) prepare(ctx context.Context, key string, build func(context.Conte
 	if err != nil {
 		return Image{}, err
 	}
-	if err := os.WriteFile(filepath.Join(work, "manifest.json"), data, 0444); err != nil {
+	manifestPath := filepath.Join(work, "manifest.json")
+	if err := os.WriteFile(manifestPath, data, 0444); err != nil {
 		return Image{}, err
 	}
 	if err := os.Chmod(disk, 0444); err != nil {
 		return Image{}, err
 	}
+	for _, path := range []string{disk, manifestPath, work} {
+		if err := syncPath(path); err != nil {
+			return Image{}, err
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		return Image{}, err
+	}
+	if repair {
+		// Existing overlays can still reference the original backing path.
+		target = filepath.Join(c.root, key+".repair-"+strings.TrimPrefix(filepath.Base(work), ".prepare-"))
+		if err := os.Rename(work, target); err != nil {
+			return Image{}, err
+		}
+		link := work + ".active"
+		defer os.Remove(link)
+		if err := os.Symlink(filepath.Base(target), link); err != nil {
+			return Image{}, err
+		}
+		if err := os.Rename(link, filepath.Join(c.root, key+".active")); err != nil {
+			return Image{}, err
+		}
+		if err := syncPath(c.root); err != nil {
+			return Image{}, err
+		}
+		return cachedDisk(target)
 	}
 	if err := os.Rename(work, target); err != nil {
 		return Image{}, err
 	}
+	if err := syncPath(c.root); err != nil {
+		return Image{}, err
+	}
 	return cachedDisk(target)
+}
+
+func syncPath(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	return errors.Join(file.Sync(), file.Close())
+}
+
+func cacheTarget(root, key string) (string, error) {
+	target, err := os.Readlink(filepath.Join(root, key+".active"))
+	if errors.Is(err, os.ErrNotExist) {
+		return filepath.Join(root, key), nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if filepath.Base(target) != target || !strings.HasPrefix(target, key+".repair-") {
+		return "", fmt.Errorf("invalid active image cache reference for %s", key)
+	}
+	return filepath.Join(root, target), nil
 }
 
 func verifiedImage(ctx context.Context, dir string) (Image, error) {

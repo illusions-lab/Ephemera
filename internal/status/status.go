@@ -42,10 +42,13 @@ type Snapshot struct {
 }
 
 type Instances struct {
-	Starting   int `json:"starting"`
-	Waiting    int `json:"waiting"`
-	Running    int `json:"running"`
-	Reclaiming int `json:"reclaiming"`
+	CapacityReason        string `json:"capacity_reason,omitempty"`
+	Draining              bool   `json:"draining,omitempty"`
+	Starting              int    `json:"starting"`
+	Waiting               int    `json:"waiting"`
+	Running               int    `json:"running"`
+	Reclaiming            int    `json:"reclaiming"`
+	PendingDeregistration int    `json:"pending_deregistration,omitempty"`
 }
 
 type Demand struct {

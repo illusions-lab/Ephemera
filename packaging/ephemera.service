@@ -11,6 +11,7 @@ Group=ephemera
 SupplementaryGroups=kvm
 UMask=0077
 KillMode=mixed
+ExecCondition=+/opt/ephemera/recover-install --guard-start
 ExecStart=/usr/local/bin/ephemerad --create --status-socket=/run/ephemera/status.sock
 StandardOutput=journal
 StandardError=journal
@@ -20,7 +21,7 @@ LoadCredential=github-app-key:/etc/ephemera/credentials/github-app.pem
 StateDirectory=ephemera
 StateDirectoryMode=0700
 TimeoutStartSec=40min
-TimeoutStopSec=60s
+TimeoutStopSec=infinity
 Restart=on-failure
 RestartSec=15s
 

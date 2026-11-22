@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/illusions-lab/Ephemera/internal/control"
 	"github.com/illusions-lab/Ephemera/internal/status"
 	"golang.org/x/sys/unix"
 )
@@ -122,42 +123,48 @@ func (a activation) run(ctx context.Context, release string, prepare func() (*Ca
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := replaceFile(journal, data); err != nil {
-		return err
-	}
-	defer func() {
-		if result != nil {
-			if err := a.recover(journal, previous); err != nil {
-				result = errors.Join(result, err)
+	activate := func() (result error) {
+		if err := replaceFile(journal, data); err != nil {
+			return err
+		}
+		defer func() {
+			if result != nil {
+				if err := a.recover(journal, previous); err != nil {
+					result = errors.Join(result, err)
+				}
+			}
+		}()
+		if previous.Loaded {
+			if err := launchctl(ctx, "bootout", a.domain+"/"+Label); err != nil {
+				return err
 			}
 		}
-	}()
+		if candidate.ReplaceEditable {
+			if err := a.saveEditable(candidate.Config, candidate.Key); err != nil {
+				return err
+			}
+		}
+		if err := replaceFile(a.plist, plist); err != nil {
+			return err
+		}
+		if err := launchctl(ctx, "bootstrap", a.domain, a.plist); err != nil {
+			return err
+		}
+		if err := a.waitReady(ctx, id, candidate); err != nil {
+			return fmt.Errorf("candidate LaunchAgent did not become healthy; see %s and the macOS system log: %w", a.logFile, err)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := a.setCurrent(release); err != nil {
+			return err
+		}
+		return os.Remove(journal)
+	}
 	if previous.Loaded {
-		if err := launchctl(ctx, "bootout", a.domain+"/"+Label); err != nil {
-			return err
-		}
+		return control.Drain(ctx, filepath.Join(a.root, "state"), os.Stdin, os.Stderr, activate)
 	}
-	if candidate.ReplaceEditable {
-		if err := a.saveEditable(candidate.Config, candidate.Key); err != nil {
-			return err
-		}
-	}
-	if err := replaceFile(a.plist, plist); err != nil {
-		return err
-	}
-	if err := launchctl(ctx, "bootstrap", a.domain, a.plist); err != nil {
-		return err
-	}
-	if err := a.waitReady(ctx, id, candidate); err != nil {
-		return fmt.Errorf("candidate LaunchAgent did not become healthy; see %s and the macOS system log: %w", a.logFile, err)
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := a.setCurrent(release); err != nil {
-		return err
-	}
-	return os.Remove(journal)
+	return activate()
 }
 
 func (a activation) loaded(ctx context.Context) bool {

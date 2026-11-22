@@ -27,6 +27,9 @@ type Config struct {
 	CheckImage     func() error
 	Capacity       func() int
 	Disconnected   func()
+	Polled         func()
+	Acquisitions   *Acquisitions
+	BeginAcquire   func() (func(), bool)
 }
 
 // Update carries the latest demand and the lifecycle events in a single batch.
@@ -94,7 +97,7 @@ func Listen(ctx context.Context, cfg Config, logger *slog.Logger, handle func(co
 		}
 	}()
 	logger.Info("Listening for GitHub jobs", "scale_set", set.Name, "scale_set_id", set.ID, "claim", cfg.Claim)
-	err = pollWithCapacity(ctx, s, cfg.MaxConcurrent, cfg.Claim, cfg.CheckImage, cfg.Capacity, func(ctx context.Context, update Update) error {
+	err = pollTracked(ctx, s, cfg.MaxConcurrent, cfg.Claim, cfg.CheckImage, cfg.Capacity, cfg.Polled, cfg.Acquisitions, cfg.BeginAcquire, func(ctx context.Context, update Update) error {
 		update.ScaleSetID = set.ID
 		return handle(ctx, update)
 	})
@@ -169,16 +172,34 @@ func poll(ctx context.Context, s session, limit int, claim bool, checkImage func
 }
 
 func pollWithCapacity(ctx context.Context, s session, limit int, claim bool, checkImage func() error, local func() int, handle func(context.Context, Update) error) error {
+	return pollSession(ctx, s, limit, claim, checkImage, local, nil, handle)
+}
+
+func pollSession(ctx context.Context, s session, limit int, claim bool, checkImage func() error, local func() int, polled func(), handle func(context.Context, Update) error) error {
+	return pollTracked(ctx, s, limit, claim, checkImage, local, polled, nil, nil, handle)
+}
+
+type acquisitionState uint8
+
+const (
+	acquisitionUnknown acquisitionState = iota + 1
+	acquisitionAccepted
+	acquisitionTerminal
+)
+
+// Acquisitions belongs to the serial listener loop and survives session changes.
+type Acquisitions struct {
+	requests map[int64]acquisitionState
+}
+
+func pollTracked(ctx context.Context, s session, limit int, claim bool, checkImage func() error, local func() int, polled func(), tracker *Acquisitions, begin func() (func(), bool), handle func(context.Context, Update) error) error {
+	const maxTrackedAcquisitions = 65536
 	initialSession := s.Session()
 	stats := initialSession.Statistics
 	if stats == nil {
 		return errors.New("GitHub returned no initial Scale Set statistics")
 	}
-	if local != nil && checkImage != nil {
-		if err := checkImage(); err != nil {
-			return fmt.Errorf("runner image unavailable: %w", err)
-		}
-	}
+
 	observedAt := time.Now().UTC()
 	initial := demand(stats, limit)
 	initial.DemandObservedAt = observedAt
@@ -191,10 +212,28 @@ func pollWithCapacity(ctx context.Context, s session, limit int, claim bool, che
 	}
 	var lastMessageID int
 	var statisticsMessageID int
-	acquired := make(map[int64]bool)
-	var pending int
+	if tracker == nil {
+		tracker = &Acquisitions{}
+	}
+	if tracker.requests == nil {
+		tracker.requests = make(map[int64]acquisitionState)
+	}
+	acquired := tracker.requests
+	pending := make(map[int64]struct{})
+	available := func() int {
+		occupied := max(stats.TotalAssignedJobs, stats.TotalAcquiredJobs)
+		slots := min(limit-occupied-len(pending), maxTrackedAcquisitions-len(acquired))
+		if local != nil {
+			// The reconciler budgets against assigned demand. Acquired jobs
+			// awaiting assignment, including replies after the last statistics,
+			// also need a VM or a ready runner.
+			unassigned := max(0, stats.TotalAcquiredJobs-stats.TotalAssignedJobs)
+			slots = min(slots, local()-unassigned-len(pending))
+		}
+		return max(0, slots)
+	}
 	for ctx.Err() == nil {
-		if checkImage != nil {
+		if local == nil && checkImage != nil {
 			if err := checkImage(); err != nil {
 				return fmt.Errorf("runner image unavailable: %w", err)
 			}
@@ -203,7 +242,7 @@ func pollWithCapacity(ctx context.Context, s session, limit int, claim bool, che
 			// The capacity header describes total scale set capacity,
 			// including already occupied slots.
 			occupied := max(stats.TotalAssignedJobs, stats.TotalAcquiredJobs)
-			capacity = min(limit, occupied+pending+local())
+			capacity = min(limit, occupied+len(pending)+available())
 		}
 		msg, err := s.GetMessage(ctx, lastMessageID, capacity)
 		if err != nil {
@@ -212,12 +251,15 @@ func pollWithCapacity(ctx context.Context, s session, limit int, claim bool, che
 		if local != nil && s.Session().Statistics != initialSession.Statistics {
 			return errors.New("Scale Set session refreshed during polling")
 		}
+		if polled != nil {
+			polled()
+		}
 		if msg == nil {
 			continue
 		}
 		if msg.Statistics != nil && msg.MessageID > statisticsMessageID {
 			statisticsMessageID = msg.MessageID
-			pending = 0
+			clear(pending)
 			stats = msg.Statistics
 			observedAt = time.Now().UTC()
 		}
@@ -235,44 +277,59 @@ func pollWithCapacity(ctx context.Context, s session, limit int, claim bool, che
 			if local == nil && msg.Statistics == nil {
 				return fmt.Errorf("Scale Set message %d contains job offers without current statistics", msg.MessageID)
 			}
-			occupied := max(stats.TotalAssignedJobs, stats.TotalAcquiredJobs)
-			slots := limit - occupied - pending
+			slots := available()
 			offers := msg.JobAvailableMessages
 			if local != nil {
-				slots = min(slots, local())
 				offers = nil
 				for _, offer := range msg.JobAvailableMessages {
-					if offer != nil && !acquired[offer.RunnerRequestID] {
+					if offer != nil && acquired[offer.RunnerRequestID] == 0 {
 						offers = append(offers, offer)
 					}
 				}
 			}
 			ids := claimable(offers, slots)
-			if len(ids) > 0 {
-				if checkImage != nil {
-					if err := checkImage(); err != nil {
+			if len(ids) > 0 && checkImage != nil {
+				if err := checkImage(); err != nil {
+					if local == nil {
 						return fmt.Errorf("runner image unavailable: %w", err)
 					}
-				}
-				update.Acquired, err = s.AcquireJobs(ctx, ids)
-				if err != nil {
-					return fmt.Errorf("acquire GitHub jobs: %w", err)
-				}
-				if local != nil && s.Session().Statistics != initialSession.Statistics {
-					return errors.New("Scale Set session refreshed during acquisition")
-				}
-				for _, id := range update.Acquired {
-					if !acquired[id] {
-						acquired[id] = true
-						pending++
-					}
+					ids = nil
 				}
 			}
-		}
-		if local != nil && len(update.Acquired) > 0 {
-			update.Assigned, update.Started, update.Completed = nil, nil, nil
-			if err := handle(ctx, update); err != nil {
-				return fmt.Errorf("handle GitHub acquisitions: %w", err)
+			if len(ids) > 0 {
+				release, allowed := func() {}, true
+				if begin != nil {
+					release, allowed = begin()
+				}
+				if allowed {
+					for _, id := range ids {
+						acquired[id] = acquisitionUnknown
+					}
+					update.Acquired, err = s.AcquireJobs(ctx, ids)
+					if err != nil {
+						release()
+						return fmt.Errorf("acquire GitHub jobs: %w", err)
+					}
+					if local != nil && s.Session().Statistics != initialSession.Statistics {
+						release()
+						return errors.New("Scale Set session refreshed during acquisition")
+					}
+					for _, id := range ids {
+						delete(acquired, id)
+					}
+					for _, id := range update.Acquired {
+						acquired[id] = acquisitionAccepted
+						pending[id] = struct{}{}
+					}
+					if local != nil && len(update.Acquired) > 0 {
+						update.Assigned, update.Started, update.Completed = nil, nil, nil
+						err = handle(ctx, update)
+					}
+					release()
+					if err != nil {
+						return fmt.Errorf("handle GitHub acquisitions: %w", err)
+					}
+				}
 			}
 		}
 		if local == nil {
@@ -280,11 +337,29 @@ func pollWithCapacity(ctx context.Context, s session, limit int, claim bool, che
 				return fmt.Errorf("handle Scale Set message %d: %w", msg.MessageID, err)
 			}
 		}
+		for _, job := range msg.JobAssignedMessages {
+			if job != nil && acquired[job.RunnerRequestID] == acquisitionUnknown {
+				acquired[job.RunnerRequestID] = acquisitionAccepted
+			}
+		}
+		for _, job := range msg.JobCompletedMessages {
+			if job != nil && acquired[job.RunnerRequestID] != 0 {
+				acquired[job.RunnerRequestID] = acquisitionTerminal
+				delete(pending, job.RunnerRequestID)
+			}
+		}
 		ackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		err = s.DeleteMessage(ackCtx, msg.MessageID)
 		cancel()
 		if err != nil {
 			return fmt.Errorf("acknowledge Scale Set message %d: %w", msg.MessageID, err)
+		}
+		if msg.MessageID > lastMessageID {
+			for _, job := range msg.JobCompletedMessages {
+				if job != nil && acquired[job.RunnerRequestID] == acquisitionTerminal {
+					delete(acquired, job.RunnerRequestID)
+				}
+			}
 		}
 		lastMessageID = max(lastMessageID, msg.MessageID)
 	}

@@ -34,11 +34,19 @@ func Run(args []string) error {
 		if len(args) > 2 {
 			return errors.New("usage: ephe update [--check | --apply]")
 		}
-		cmd := exec.Command("/opt/ephemera/current/install.sh", append([]string{"--update"}, args[1:]...)...)
+		installer := "/opt/ephemera/current/install.sh"
+		if len(args) == 2 && args[1] == "--apply" {
+			if _, err := os.Stat("/opt/ephemera/staged/install.sh"); err == nil {
+				installer = "/opt/ephemera/staged/install.sh"
+			}
+		}
+		cmd := exec.Command(installer, append([]string{"--update"}, args[1:]...)...)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		cmd.Stdin = os.Stdin
 		return cmd.Run()
+	case args[0] == "service":
+		return runService(args[1:])
 	case args[0] == "status":
 		return runStatus(args[1:])
 	case args[0] == "doctor":

@@ -356,3 +356,14 @@ func TestRecoveryRequiresOriginalTartHome(t *testing.T) {
 		t.Fatalf("legacy QEMU record rejected: %v", err)
 	}
 }
+
+func TestDrainDoesNotReclaimRunningInstanceAfterDeadline(t *testing.T) {
+	now := time.Now()
+	r := &reconciler{draining: true, instances: map[string]*instanceState{
+		"running": {phase: running, deadline: now},
+	}}
+	free, counts := r.reconcile(t.Context(), now.Add(24*time.Hour))
+	if free != 0 || counts.Running != 1 || counts.Reclaiming != 0 {
+		t.Fatalf("draining instance changed state: free = %d, counts = %+v", free, counts)
+	}
+}

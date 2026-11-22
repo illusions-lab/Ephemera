@@ -45,8 +45,9 @@ func TestExecutionPreparesImageAfterRecovery(t *testing.T) {
 			}
 			cfg := config.MacDefaults()
 			prepare := func() (string, func() error, error) {
-				if _, err := os.Stat(store.path(id)); !errors.Is(err, os.ErrNotExist) {
-					return "", nil, fmt.Errorf("previous record was not removed before preparing image: %v", err)
+				records, err := store.load()
+				if err != nil || len(records) != 1 || !records[0].LocalReclaimed {
+					return "", nil, fmt.Errorf("expected durable deregistration record: %v, %w", records, err)
 				}
 				fake.record("prepare-current-image", old)
 				return "/new.qcow2", func() error { return nil }, test.imageErr
@@ -84,7 +85,6 @@ func TestExecutionPreparesImageAfterRecovery(t *testing.T) {
 				t.Fatalf("execute = %v, recovery reported = %t, healthy = %t", err, recovered, healthy.Load())
 			}
 			want := []string{"stop:" + old.Resource, "delete:" + old.Resource, "stop:" + old.Resource,
-				"delete:" + old.Resource, "remove-123:" + old.Resource, "stop:" + old.Resource,
 				"delete:" + old.Resource, "remove-123:" + old.Resource, "prepare-current-image:" + old.Resource}
 			if !reflect.DeepEqual(fake.calls, want) {
 				t.Errorf("execution order = %v, want %v", fake.calls, want)

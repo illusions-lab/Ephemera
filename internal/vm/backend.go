@@ -1,6 +1,12 @@
 package vm
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrImageInfrastructure identifies failures attributable to a VM base image.
+var ErrImageInfrastructure = errors.New("VM base image infrastructure failure")
 
 // Instance identifies resources across daemon restarts.
 type Instance struct {
@@ -9,6 +15,7 @@ type Instance struct {
 	Namespace                                  string `json:",omitempty"`
 	Scope, ScaleSet                            string
 	ScaleSetID, RunnerID                       int
+	LocalReclaimed                             bool `json:",omitempty"`
 }
 
 type Process struct {

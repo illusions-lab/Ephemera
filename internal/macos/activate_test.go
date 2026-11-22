@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/illusions-lab/Ephemera/internal/control"
 	"github.com/illusions-lab/Ephemera/internal/status"
 )
 
@@ -108,6 +109,24 @@ func fixtureStatus(t *testing.T, a activation, snapshot func() status.Snapshot) 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = closeStatus() })
+	closeControl, err := control.Listen(context.Background(), filepath.Join(a.root, "state"), func(ctx context.Context, req <-chan control.Request, reply chan<- control.Snapshot) {
+		select {
+		case <-ctx.Done():
+			return
+		case <-req:
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case reply <- control.Snapshot{Ready: true}:
+		}
+		<-ctx.Done()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(closeControl)
+
 }
 
 func plistActivationID(path string) string {
