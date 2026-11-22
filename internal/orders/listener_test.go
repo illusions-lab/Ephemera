@@ -1,9 +1,12 @@
 package orders
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/actions/scaleset"
@@ -105,12 +108,13 @@ func offer(id int64) *scaleset.JobAvailable {
 }
 
 type fakeScaleSets struct {
-	found     *scaleset.RunnerScaleSet
-	lookup    string
-	created   *scaleset.RunnerScaleSet
-	updated   *scaleset.RunnerScaleSet
-	groupName string
-	groupID   int
+	found             *scaleset.RunnerScaleSet
+	lookup            string
+	created           *scaleset.RunnerScaleSet
+	updated           *scaleset.RunnerScaleSet
+	groupName         string
+	groupID           int
+	ignoreLabelUpdate bool
 }
 
 func (s *fakeScaleSets) GetRunnerGroupByName(_ context.Context, name string) (*scaleset.RunnerGroup, error) {
@@ -120,6 +124,9 @@ func (s *fakeScaleSets) GetRunnerGroupByName(_ context.Context, name string) (*s
 
 func (s *fakeScaleSets) UpdateRunnerScaleSet(_ context.Context, id int, set *scaleset.RunnerScaleSet) (*scaleset.RunnerScaleSet, error) {
 	s.updated = set
+	if s.ignoreLabelUpdate {
+		return s.found, nil
+	}
 	result := *s.found
 	result.ID, result.Labels = id, set.Labels
 	s.found = &result
@@ -177,6 +184,35 @@ func TestFindScaleSetUpdatesLabelsInSelectedGroup(t *testing.T) {
 	set, err = findScaleSet(t.Context(), api, cfg)
 	if err != nil || !reflect.DeepEqual(set.Labels, want[:len(want)-1]) {
 		t.Fatalf("explicit labels did not remove old labels: set = %+v, error = %v", set, err)
+	}
+}
+
+func TestScaleSetLabelRegistrationAndIgnoredUpdate(t *testing.T) {
+	cfg := Config{ScaleSetName: "mac-build", Create: true, Labels: []string{"self-hosted", "macOS", "ARM64"}}
+	want := []scaleset.Label{{Name: "mac-build"}, {Name: "self-hosted"}, {Name: "macOS"}, {Name: "ARM64"}}
+	api := &fakeScaleSets{}
+	set, err := findScaleSet(t.Context(), api, cfg)
+	if err != nil || api.created == nil || !reflect.DeepEqual(api.created.Labels, want) {
+		t.Fatalf("create did not send the workflow labels: %+v, %v", api.created, err)
+	}
+	var output bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&output, nil))
+	reportScaleSetLabels(logger, cfg, set)
+	if output.Len() != 0 {
+		t.Fatalf("effective labels unexpectedly triggered a warning: %s", &output)
+	}
+
+	api = &fakeScaleSets{ignoreLabelUpdate: true, found: &scaleset.RunnerScaleSet{
+		ID: 42, Name: "mac-build", Labels: []scaleset.Label{{Name: "mac-build"}},
+	}}
+	set, err = findScaleSet(t.Context(), api, cfg)
+	if err != nil || api.updated == nil || !reflect.DeepEqual(api.updated.Labels, want) || len(set.Labels) != 1 {
+		t.Fatalf("ignored update did not preserve the GitHub response: %+v, %v", set, err)
+	}
+	reportScaleSetLabels(logger, cfg, set)
+	if !strings.Contains(output.String(), "GitHub did not return all requested Scale Set labels") ||
+		!strings.Contains(output.String(), "effective_labels=[mac-build]") {
+		t.Fatalf("missing label warning: %s", &output)
 	}
 }
 

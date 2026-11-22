@@ -24,6 +24,10 @@ on:
         type: choice
         options: [amd64, arm64]
         default: amd64
+      platform_labels:
+        description: Route by self-hosted, OS, and architecture labels
+        type: boolean
+        default: false
       overlap:
         description: Run two overlapping jobs
         default: false
@@ -33,7 +37,7 @@ permissions: {}
 
 jobs:
   guest:
-    runs-on: ${{ inputs.scale_set }}
+    runs-on: ${{ fromJSON(inputs.platform_labels && format('["self-hosted","{0}","{1}"]', inputs.guest_os == 'macos' && 'macOS' || 'Linux', inputs.arch == 'arm64' && 'ARM64' || 'X64') || toJSON(inputs.scale_set)) }}
     timeout-minutes: 70
     strategy:
       fail-fast: false

@@ -18,7 +18,7 @@ const gib = uint64(1 << 30)
 
 type resourceBudget struct {
 	root                           string
-	memory, disk                   uint64
+	memory, disk, memoryReserve    uint64
 	sample                         func(context.Context, string) (uint64, uint64, error)
 	checked                        time.Time
 	availableMemory, availableDisk uint64
@@ -36,14 +36,18 @@ func (b *resourceBudget) slots(ctx context.Context, now time.Time, starting int,
 	if b.err != nil {
 		return 0, "host resources could not be measured: " + b.err.Error()
 	}
-	memSlots := (max(gib, b.availableMemory) - gib) / b.memory
+	reserve := b.memoryReserve
+	if reserve == 0 {
+		reserve = gib
+	}
+	memSlots := (max(reserve, b.availableMemory) - reserve) / b.memory
 	diskSlots := (max(5*gib, b.availableDisk) - 5*gib) / b.disk
 	committed := uint64(starting)
 	free := min(memSlots, diskSlots)
 	reason := ""
 	if committed+uint64(maxSlots) > free {
 		if memSlots <= diskSlots {
-			reason = "available memory after the 1 GiB host reserve and pending VM starts"
+			reason = fmt.Sprintf("available memory after the %d MiB host reserve and pending VM starts", reserve>>20)
 		} else {
 			reason = "available VM disk space after the 5 GiB host reserve and pending VM starts"
 		}
