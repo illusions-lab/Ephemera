@@ -9,6 +9,11 @@ the release, GitHub App credentials, and VM state under
 The agent runs while that account is logged in, including after it logs
 back in after a restart. FileVault may require an unlock before login.
 
+During interactive setup over SSH, Ephemera uses an existing `cloudflared`
+or downloads a verified copy for that session. Open the public URL between
+the divider lines in your local browser. Setup prints SSH port-forwarding
+instructions as a fallback.
+
 The first interactive setup asks whether the Mac is dedicated to runners.
 **No** is the default. **Yes** applies the AC settings shown in the prompt.
 They disable idle system sleep on AC and enable restart after power loss on

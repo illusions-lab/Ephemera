@@ -27,14 +27,16 @@ type quickTunnel struct {
 }
 
 func startQuickTunnel(ctx context.Context, address string) (*quickTunnel, error) {
-	binary := installedCloudflared
-	if _, err := os.Stat(binary); errors.Is(err, os.ErrNotExist) {
-		var err error
-		binary, err = exec.LookPath("cloudflared")
-		if err != nil {
-			return nil, errors.New("install cloudflared to use a Cloudflare Quick Tunnel")
-		}
+	binary, cleanup, err := findCloudflared(ctx)
+	if err != nil {
+		return nil, err
 	}
+	started := false
+	defer func() {
+		if !started {
+			cleanup()
+		}
+	}()
 
 	processCtx, cancel := context.WithCancel(ctx)
 	command := exec.CommandContext(processCtx, binary, "tunnel", "--config", os.DevNull, "--no-autoupdate", "--url", "http://"+address)
@@ -54,10 +56,12 @@ func startQuickTunnel(ctx context.Context, address string) (*quickTunnel, error)
 		return nil, err
 	}
 
+	started = true
 	assigned := make(chan *url.URL, 1)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer cleanup()
 		stopClosing := context.AfterFunc(processCtx, func() { _ = output.Close() })
 		defer stopClosing()
 		scanner := bufio.NewScanner(output)
@@ -102,7 +106,7 @@ func (t *quickTunnel) close() {
 
 func showBrowserSetup(ctx context.Context, address, localURL, publicURL string) {
 	if publicURL != "" {
-		fmt.Printf("\nCloudflare Quick Tunnel\n  %s\n\n", publicURL)
+		fmt.Printf("\nOpen this public Cloudflare Quick Tunnel URL in your browser\n\n---------------------\n%s\n---------------------\n\n", publicURL)
 	} else {
 		fmt.Printf("\nOpen this address in your browser\n  %s\n\n", localURL)
 	}
