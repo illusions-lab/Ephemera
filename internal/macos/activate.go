@@ -1,6 +1,7 @@
 package macos
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"encoding/xml"
@@ -110,7 +111,7 @@ func (a activation) run(ctx context.Context, release string, prepare func() (*Ca
 			return err
 		}
 	}
-	plist, err := launchAgent(release, snapshot, id, a.logFile)
+	plist, err := launchAgent(ctx, release, snapshot, id, a.logFile)
 	if err != nil {
 		return err
 	}
@@ -273,7 +274,7 @@ func replaceFile(path string, data []byte) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-func launchAgent(release, snapshot, id, log string) ([]byte, error) {
+func launchAgent(ctx context.Context, release, snapshot, id, log string) ([]byte, error) {
 	plist := struct {
 		XMLName xml.Name     `xml:"plist"`
 		Version string       `xml:"version,attr"`
@@ -293,7 +294,17 @@ func launchAgent(release, snapshot, id, log string) ([]byte, error) {
 		{"Umask", 63},
 	}}
 	body, err := xml.MarshalIndent(plist, "", "  ")
-	return append([]byte(xml.Header), body...), err
+	if err != nil {
+		return nil, err
+	}
+	// launchd expects the canonical Apple plist representation.
+	cmd := exec.CommandContext(ctx, "/usr/bin/plutil", "-convert", "xml1", "-o", "-", "-")
+	cmd.Stdin = bytes.NewReader(append([]byte(xml.Header), body...))
+	normalized, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("normalize LaunchAgent plist: %w", err)
+	}
+	return normalized, nil
 }
 
 type plistValue struct {

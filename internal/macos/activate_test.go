@@ -150,6 +150,9 @@ func TestActivationInstallsAndAppliesConfig(t *testing.T) {
 		if out, err := exec.Command("/usr/bin/plutil", "-lint", a.plist).CombinedOutput(); err != nil {
 			t.Fatalf("invalid LaunchAgent: %v: %s", err, out)
 		}
+		if raw := readActivationFile(t, a.plist); !strings.Contains(raw, "<!DOCTYPE plist PUBLIC") || !strings.Contains(raw, "<true/>") {
+			t.Fatal("LaunchAgent was not written in canonical Apple XML plist format")
+		}
 		if got := readPlist(t, a.plist, "ProgramArguments.0"); got != filepath.Join(release, "ephemerad") {
 			t.Fatalf("daemon path = %q", got)
 		}
