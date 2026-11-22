@@ -54,10 +54,18 @@ prepared at daemon startup.
 `ephe config validate` and `ephe image prepare` expose the same validation
 and image preparation for scripted use.
 
+On Apple Silicon, `install-macos.sh` selects a version under the logged-in
+user's `~/Library/Application Support/Ephemera` and delegates GitHub and
+image setup to `ephe setup`. The user LaunchAgent starts the same daemon.
+The user directory holds the private GitHub App key, Tart cache, state,
+and status socket. The daemon takes the state lock before reclaiming a
+stale status socket, including in observation mode.
+
 ## Daemon lifecycle
 
 1. Load and validate the saved configuration. Read the GitHub App private
-   key through systemd's credential mechanism.
+   key through systemd's credential mechanism on Linux or from the private
+   user directory on macOS.
 2. In execution mode, lock the instance directory and check the QEMU
    backend. Verify the configured image in the cache or assemble and
    boot-test it. The configuration identifies the platform by a stable tag such as
@@ -148,14 +156,13 @@ backend, guest OS, architecture, and pinned source that they support.
 | Backend | First target | Storage and bootstrap |
 |---|---|---|
 | QEMU | Linux amd64 or arm64 host with KVM and a matching Ubuntu guest | Create a qcow2 overlay and a private per-instance cloud-init seed. Reuse the Ubuntu image's systemd runner bootstrap. Remove the seed with the instance. ARM64 uses read-only AAVMF firmware, private per-instance UEFI variables, and a dedicated virtio console for readiness. |
-| Tart | Apple Silicon macOS host, macOS arm64 guest | Clone a pinned Tart image and run the clone headless. Prototype JIT delivery through the Tart Guest Agent using a narrowly scoped host-to-guest channel. Verify agent readiness, credential confidentiality, and daemon service-account operation on real hardware. |
+| Tart | Apple Silicon macOS host, macOS arm64 guest | Clone a pinned Tart image into the daemon’s private Tart home. Provision the runner account through the Guest Agent and deliver JIT on stdin. Emit ready when the runner begins listening. The development LaunchAgent runs as the logged-in macOS user. |
 
 Place bootstrap artifacts in private per-instance storage and expose only
 what the guest needs. Guest networking must reach GitHub and respect the
 host's isolation policy. Tart Linux arm64 and additional QEMU guests can use
 the same lifecycle once their images and bootstrap paths are verified.
-Darwin packaging and launchd supervision are separate work from the Linux
-systemd installation.
+The development LaunchAgent and Linux systemd unit supervise the same daemon. Public Darwin packaging is planned.
 
 [Tart VM management](https://tart.run/quick-start/) · [Tart Guest Agent](https://tart.run/blog/2025/06/01/bridging-the-gaps-with-the-tart-guest-agent/)
 

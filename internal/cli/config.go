@@ -10,7 +10,7 @@ import (
 
 func validateConfig(args []string) error {
 	flags := flag.NewFlagSet("config validate", flag.ContinueOnError)
-	path := flags.String("config", filepath.Join(config.Dir, "config.yaml"), "configuration file")
+	path := flags.String("config", filepath.Join(config.DefaultDir(), "config.yaml"), "configuration file")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil

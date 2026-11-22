@@ -3,9 +3,11 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"github.com/illusions-lab/Ephemera/internal/version"
 	"os"
 	"os/exec"
+	"runtime"
+
+	"github.com/illusions-lab/Ephemera/internal/version"
 )
 
 func Run(args []string) error {
@@ -17,6 +19,9 @@ func Run(args []string) error {
 		fmt.Println(version.String())
 		return nil
 	case len(args) >= 1 && args[0] == "update":
+		if runtime.GOOS == "darwin" {
+			return errors.New("use install-macos.sh --version TAG to switch versions")
+		}
 		for _, arg := range args[1:] {
 			if arg != "--check" && arg != "--apply" {
 				return errors.New("usage: ephe update [--check | --apply]")

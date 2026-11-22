@@ -17,7 +17,7 @@ import (
 
 func prepareImage(args []string) error {
 	flags := flag.NewFlagSet("image prepare", flag.ContinueOnError)
-	path := flags.String("config", filepath.Join(config.Dir, "config.yaml"), "configuration file")
+	path := flags.String("config", filepath.Join(config.DefaultDir(), "config.yaml"), "configuration file")
 	cacheDir := flags.String("image-cache", image.DefaultCache, "image cache directory")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {

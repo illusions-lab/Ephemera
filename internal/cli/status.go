@@ -10,10 +10,12 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/illusions-lab/Ephemera/internal/macos"
 	runtimeStatus "github.com/illusions-lab/Ephemera/internal/status"
 )
 
@@ -34,7 +36,11 @@ func runStatus(args []string) error {
 	flags := flag.NewFlagSet("status", flag.ContinueOnError)
 	jsonOutput := flags.Bool("json", false, "write JSON, one object per update in watch mode")
 	watch := flags.Bool("watch", false, "refresh every two seconds")
-	socket := flags.String("socket", runtimeStatus.SocketPath, "daemon status socket")
+	defaultSocket := runtimeStatus.SocketPath
+	if runtime.GOOS == "darwin" {
+		defaultSocket = macos.Socket()
+	}
+	socket := flags.String("socket", defaultSocket, "daemon status socket")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -111,6 +117,21 @@ func collectStatus(ctx context.Context, socket string) statusReport {
 func queryService(ctx context.Context) serviceStatus {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
+	if runtime.GOOS == "darwin" {
+		out, err := exec.CommandContext(ctx, "launchctl", "print", fmt.Sprintf("gui/%d/%s", os.Getuid(), macos.Label)).Output()
+		if err != nil {
+			return serviceStatus{State: "unknown"}
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if value, ok := strings.CutPrefix(strings.TrimSpace(line), "state = "); ok {
+				if value == "running" {
+					return serviceStatus{State: "active", Substate: value}
+				}
+				return serviceStatus{State: "inactive", Substate: value}
+			}
+		}
+		return serviceStatus{State: "unknown"}
+	}
 	out, _ := exec.CommandContext(ctx, "systemctl", "show", "--no-pager",
 		"--property=LoadState,ActiveState,SubState,Result,StatusText", "ephemera.service").Output()
 	state := serviceStatus{State: "unknown"}

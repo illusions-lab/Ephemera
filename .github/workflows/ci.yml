@@ -10,6 +10,9 @@ on:
         type: string
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && 'ephemera-release' || format('ephemera-ci-{0}', github.run_id) }}
+  queue: max
 jobs:
   check:
     strategy:
@@ -60,15 +63,37 @@ jobs:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     uses: ./.github/workflows/ubuntu-vm.yml
 
+  macos-install:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test ./...
+      - run: scripts/ci-macos-install-test.sh
+      - run: scripts/ci-macos-power-test.sh
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: v2.12.7
+          args: release --snapshot --clean
+      - name: Verify Darwin snapshot natively
+        run: scripts/verify-macos-bundle.sh dist scripts/install-macos.sh
+
   release:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: [check, ubuntu-install, ubuntu-vm]
+    needs: [check, ubuntu-install, ubuntu-vm, macos-install]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-    concurrency:
-      group: ephemera-release
-      queue: max
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      commit: ${{ steps.tag.outputs.commit }}
+      published: ${{ steps.existing.outputs.published }}
+      darwin: ${{ steps.assets.outputs.darwin }}
+      arm64: ${{ steps.assets.outputs.arm64 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -111,20 +136,38 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GORELEASER_CURRENT_TAG: ${{ steps.tag.outputs.tag }}
+      - name: Identify assets for the release commit
+        id: assets
+        env:
+          RELEASE_COMMIT: ${{ steps.tag.outputs.commit }}
+        run: |
+          release_config=$(git show "$RELEASE_COMMIT:.goreleaser.yaml")
+          if grep -Fq 'id: darwin-bundle' <<< "$release_config"; then
+            echo 'darwin=true' >> "$GITHUB_OUTPUT"
+          fi
+          if grep -Fq 'goarch: [amd64, arm64]' <<< "$release_config"; then
+            echo 'arm64=true' >> "$GITHUB_OUTPUT"
+          fi
       - name: Verify release bundle
         if: steps.existing.outputs.published != 'true'
         env:
           TAG: ${{ steps.tag.outputs.tag }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ steps.tag.outputs.commit }}
+          DARWIN: ${{ steps.assets.outputs.darwin }}
+          ARM64: ${{ steps.assets.outputs.arm64 }}
         run: |
           mkdir -p "$RUNNER_TEMP/release"
+          darwin_assets=()
+          if [[ "$DARWIN" == true ]]; then
+            darwin_assets=(--pattern ephemera_darwin_arm64.tar.gz --pattern install-macos.sh)
+          fi
           gh release download "$TAG" --dir "$RUNNER_TEMP/release" \
-            --pattern 'ephemera_linux_*.tar.gz' --pattern checksums.txt --pattern install.sh
+            --pattern 'ephemera_linux_*.tar.gz' --pattern checksums.txt --pattern install.sh "${darwin_assets[@]}"
           cd "$RUNNER_TEMP/release"
           sha256sum -c checksums.txt
           arches=(amd64)
-          if git show "$RELEASE_COMMIT:.goreleaser.yaml" | grep -F 'goarch: [amd64, arm64]' >/dev/null; then
+          if [[ "$ARM64" == true ]]; then
             arches+=(arm64)
             sudo apt-get update
             sudo apt-get install -y qemu-user
@@ -147,24 +190,58 @@ jobs:
             test "$("${executor[@]}" "verify-$arch/ephemera" version)" = "$TAG $RELEASE_COMMIT"
             test "$("${executor[@]}" "verify-$arch/ephemerad" --version)" = "$TAG $RELEASE_COMMIT"
           done
-      - name: Publish verified draft
-        if: steps.existing.outputs.published != 'true'
+
+  verify-darwin:
+    needs: release
+    if: needs.release.outputs.published != 'true' && needs.release.outputs.darwin == 'true'
+    runs-on: macos-26
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Darwin release natively
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ needs.release.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.release.outputs.commit }}
+        run: |
+          assets="$RUNNER_TEMP/release"
+          gh release download "$TAG" --dir "$assets" \
+            --pattern ephemera_darwin_arm64.tar.gz --pattern checksums.txt --pattern install-macos.sh
+          scripts/verify-macos-bundle.sh "$assets" "$assets/install-macos.sh" "$TAG $RELEASE_COMMIT"
+
+  publish:
+    needs: [release, verify-darwin]
+    if: >-
+      always() && needs.release.result == 'success' && needs.release.outputs.published != 'true' &&
+      (needs.verify-darwin.result == 'success' ||
+       (needs.release.outputs.darwin != 'true' && needs.verify-darwin.result == 'skipped'))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Publish verified draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release.outputs.tag }}
+          DARWIN: ${{ needs.release.outputs.darwin }}
+          ARM64: ${{ needs.release.outputs.arm64 }}
         run: |
           published=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')
           latest=$(printf '%s\n' "$published" | grep -E '^v0\.1\.[0-9]+$' | sort -V | tail -n1 || true)
           if [ -n "$latest" ] && [ "$(printf '%s\n%s\n' "$TAG" "$latest" | sort -V | tail -n1)" != "$TAG" ]; then
             expected_latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
-            gh release edit "$TAG" --draft=false --latest=false
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false
           else
             expected_latest=$TAG
-            gh release edit "$TAG" --draft=false --latest
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
           fi
           assets=(checksums.txt ephemera_linux_amd64.tar.gz install.sh)
-          if [[ -f "$RUNNER_TEMP/release/ephemera_linux_arm64.tar.gz" ]]; then
+          if [[ "$ARM64" == true ]]; then
             assets+=(ephemera_linux_arm64.tar.gz)
+          fi
+          if [[ "$DARWIN" == true ]]; then
+            assets+=(ephemera_darwin_arm64.tar.gz install-macos.sh)
           fi
           for asset in "${assets[@]}"; do
             curl --fail --silent --show-error --location --retry 3 --retry-all-errors \

@@ -18,8 +18,11 @@ import (
 
 	"github.com/illusions-lab/Ephemera/internal/config"
 	"github.com/illusions-lab/Ephemera/internal/image"
+	"github.com/illusions-lab/Ephemera/internal/macos"
 	"github.com/illusions-lab/Ephemera/internal/orders"
 	"github.com/illusions-lab/Ephemera/internal/qemuplatform"
+	"github.com/illusions-lab/Ephemera/internal/status"
+	"github.com/illusions-lab/Ephemera/internal/vm"
 	"golang.org/x/sys/unix"
 )
 
@@ -40,8 +43,8 @@ type doctorChecks struct {
 
 func runDoctor(args []string) error {
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	path := flags.String("config", filepath.Join(config.Dir, "config.yaml"), "configuration file")
-	keyPath := flags.String("github-app-key", filepath.Join(config.Dir, "credentials", "github-app.pem"), "GitHub App PEM file")
+	path := flags.String("config", filepath.Join(config.DefaultDir(), "config.yaml"), "configuration file")
+	keyPath := flags.String("github-app-key", filepath.Join(config.DefaultDir(), "credentials", "github-app.pem"), "GitHub App PEM file")
 	cacheDir := flags.String("image-cache", image.DefaultCache, "runner image cache directory")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -55,6 +58,9 @@ func runDoctor(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if runtime.GOOS == "darwin" {
+		return diagnoseMac(ctx, *path, *keyPath)
+	}
 	return diagnose(ctx, os.Stdout, doctorPaths{config: *path, key: *keyPath, cache: *cacheDir}, doctorChecks{
 		loadConfig: config.Load, readKey: config.ReadKey, probeScaleSet: orders.ProbeScaleSet,
 		checkImage: image.CheckCached, hostArch: linuxHostArch(),
@@ -212,4 +218,40 @@ func linuxHostArch() string {
 		return runtime.GOARCH
 	}
 	return ""
+}
+
+func diagnoseMac(ctx context.Context, configPath, keyPath string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	if cfg.VM.Backend != "tart" {
+		return errors.New("macOS runner configuration must use Tart")
+	}
+	if _, err := config.ReadKey(keyPath); err != nil {
+		return fmt.Errorf("read GitHub App key: %w", err)
+	}
+	fmt.Println("Configuration and GitHub App key are readable.")
+	backend, err := vm.NewTart(filepath.Join(macos.StateDir(), "tart"), cfg.VM.VCPUs, cfg.VM.MemoryMiB)
+	if err != nil {
+		return err
+	}
+	if err := backend.CheckInstalled(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("Tart %s is available.\n", macos.TartVersion)
+	free, path, err := availableDisk(macos.Root())
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%.1f GiB available on %s.\n", float64(free)/(1<<30), path)
+	current, err := status.Read(ctx, macos.Socket())
+	if err != nil {
+		return fmt.Errorf("read LaunchAgent status: %w", err)
+	}
+	fmt.Printf("Ephemera %s, GitHub %s, intake %s.\n", current.Phase, current.GitHub, current.Intake)
+	if current.GitHub != "connected" {
+		return errors.New("Ephemera is not connected to GitHub")
+	}
+	return nil
 }

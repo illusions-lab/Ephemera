@@ -78,7 +78,7 @@ Ephemera is designed to support multiple operating systems and CPU architectures
 |---|---|---|---|
 | Ubuntu 24.04 | Opt-in QEMU/KVM | Opt-in QEMU/KVM, live acceptance pending | QEMU/KVM |
 | Windows | Planned | Experimental target | QEMU |
-| macOS | Not currently targeted | Planned | Tart |
+| macOS | Not currently targeted | Apple Silicon installer and Tart backend, live acceptance pending | Tart |
 
 **Notes:**
 
@@ -93,8 +93,8 @@ The current Linux daemon prepares and verifies an Ubuntu runner image
 and monitors GitHub Runner Scale Set demand. When execution is enabled,
 one daemon coordinates demand and the lifecycle of QEMU runner VMs on the
 host. QEMU/KVM on
-Linux is the first execution backend. Tart on Apple Silicon is planned for
-macOS arm64 guests, with Linux arm64 guests as a later target. The shared
+Linux is the first execution backend. Tart on Apple Silicon runs
+macOS arm64 guests. Linux arm64 guests on Tart are a later target. The shared
 lifecycle covers provisioning, runner bootstrap, and cleanup. Each backend
 handles its own guest storage and startup.
 
@@ -124,6 +124,8 @@ Ephemera builds upon established open-source technologies:
 - [Tart](https://github.com/cirruslabs/tart) — macOS and Linux virtualization on Apple Silicon.
 
 ## Installation
+
+### Install on Linux
 
 **Ubuntu 24.04 with systemd is the host validation baseline.** Other
 Linux distributions have not been verified to the same level.
@@ -180,7 +182,24 @@ On upgrades, omit the configuration and key arguments to reuse
 the installed files. Interactive installs leave service activation to
 the setup wizard. Non-interactive upgrades restart the service.
 
-## Setup and image selection
+### Install on macOS
+
+Use an Apple Silicon Mac with macOS 26 or newer. Open Terminal from the
+account that will run Ephemera, then download and run the installer:
+
+```sh
+curl -fL https://github.com/illusions-lab/Ephemera/releases/latest/download/install-macos.sh -o install-macos.sh
+/bin/bash install-macos.sh
+```
+
+Setup defaults to personal mode. If this Mac is dedicated to running CI,
+choose **Yes** to apply the power settings shown in the prompt. Setup
+verifies the GitHub App, prepares the pinned Tart image, and starts a user
+LaunchAgent in observation mode. View its state with `ephe status`.
+See the [macOS installation and acceptance guide](packaging/macos/README.md)
+for existing GitHub Apps, local bundles, upgrades, and power restore.
+
+## Setup and image selection on Linux
 
 `sudo ephe setup` and `sudo ephemera setup` open the same wizard.
 
@@ -330,6 +349,12 @@ job offers unclaimed. Add `--claim` only for a dedicated test Scale Set with
 logs. Cancel the test workflow after confirming the intake because this
 command has no runner backend.
 
+### Develop the macOS Tart runner
+
+The Tart development backend is available on Apple Silicon. See the
+[macOS development and acceptance guide](packaging/macos/README.md) for the
+pinned guest, the per-user LaunchAgent, and the dedicated Scale Set tests.
+
 ### Test QEMU execution
 
 Use one Linux KVM host and one dedicated Scale Set per architecture. Give the
@@ -429,8 +454,9 @@ Scale Set before relying on that routing.
 - [x] Copy-on-write VM provisioning
 - [x] Automatic cleanup and crash recovery
 - [ ] Remote host agents
-- [ ] Tart backend
-- [ ] macOS ARM64 runner support
+- [x] Tart development backend and offline guest bootstrap
+- [x] Apple Silicon installer, optional server profile, and native CI checks
+- [ ] macOS ARM64 live Scale Set and crash recovery acceptance
 - [ ] Linux ARM64 runner support (live Scale Set acceptance pending)
 - [ ] Multi-host scheduling
 - [x] Configurable concurrency for job intake
