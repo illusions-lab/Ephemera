@@ -20,6 +20,15 @@ import (
 const recoveryLabelPrefix = Label + ".recover-"
 const activationJournal = ".activation-transaction.json"
 
+// ActivationPending reports whether a previous switch still needs recovery.
+func ActivationPending() (bool, error) {
+	_, err := os.Stat(filepath.Join(Root(), activationJournal))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // GuardStartup refuses to start an orphaned candidate. Recovery runs in its
 // own LaunchAgent so it survives booting out the candidate.
 func GuardStartup(ctx context.Context, activationID string) error {
