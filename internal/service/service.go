@@ -74,6 +74,10 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 	if err != nil {
 		return err
 	}
+	current.ConfigDigest, err = config.Digest(cfg)
+	if err != nil {
+		return err
+	}
 	current.Scope, current.ScaleSet = cfg.GitHub.ScopeURL, cfg.GitHub.ScaleSetName
 	current.MaxConcurrent = cfg.Runner.MaxConcurrent
 	current.Backend = cfg.VM.Backend
@@ -145,6 +149,9 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 	orderConfig := orders.Config{
 		ScopeURL:       cfg.GitHub.ScopeURL,
 		ScaleSetName:   cfg.GitHub.ScaleSetName,
+		RunnerGroup:    cfg.RunnerGroup(),
+		Labels:         cfg.ScaleSetLabels(),
+		ReplaceLabels:  cfg.GitHub.Labels != nil,
 		AppID:          cfg.GitHub.AppID,
 		InstallationID: cfg.GitHub.InstallationID,
 		PrivateKey:     key,
@@ -178,6 +185,7 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 				}
 				if !update.DemandObservedAt.IsZero() {
 					current.Demand = snapshotDemand(update)
+					current.RunnerGroup, current.Labels = update.RunnerGroup, update.Labels
 				}
 				phase := "Connecting"
 				switch {
@@ -207,7 +215,7 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 				}
 				pendingHealth = false
 				return nil
-			}, updates)
+			}, func(rows []status.Instance) { current.InstanceRows = rows }, updates)
 	}
 	if store != "" && !opts.Claim {
 		closeControl, err := control.Listen(ctx, string(store), func(ctx context.Context, requests <-chan control.Request, replies chan<- control.Snapshot) {
@@ -237,6 +245,7 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 	healthy := false
 	return listen(ctx, orderConfig, logger, func(_ context.Context, update orders.Update) error {
 		current.Demand = snapshotDemand(update)
+		current.RunnerGroup, current.Labels = update.RunnerGroup, update.Labels
 		if !healthy {
 			if checkImage != nil {
 				if err := checkImage(); err != nil {

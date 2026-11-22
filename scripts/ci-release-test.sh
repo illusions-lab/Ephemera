@@ -58,6 +58,49 @@ sudo bash "$bundle/install.sh" --bundle "$bundle" --non-interactive \
   --config "$work/config.yaml" --github-app-key "$work/key.pem"
 systemctl is-active --quiet ephemera.service
 test "$(systemctl show -p StatusText --value ephemera.service)" = Healthy
+draft=/etc/ephemera/config.yaml
+active=/etc/ephemera/active/config.yaml
+apply=(sudo env "SSL_CERT_FILE=$work/ca.pem" ephe config apply --yes)
+assert_config_state() {
+  ephe status --json | python3 -c 'import json, sys
+report = json.load(sys.stdin)
+assert report["configuration"]["state"] == sys.argv[1], report
+' "$1"
+}
+ephe ps -q | diff - /dev/null
+assert_config_state applied
+sudo sed -i 's/max_concurrent: 2/max_concurrent: 0/' "$draft"
+service_pid=$(systemctl show -p MainPID --value ephemera.service)
+if "${apply[@]}"; then
+  echo 'invalid draft unexpectedly applied' >&2
+  exit 1
+fi
+test "$(systemctl show -p MainPID --value ephemera.service)" = "$service_pid"
+assert_config_state unknown
+sudo sed -i 's/max_concurrent: 0/max_concurrent: 3/' "$draft"
+sudo ephe service restart
+grep -q 'max_concurrent: 2' "$active"
+assert_config_state pending
+"${apply[@]}"
+grep -q 'max_concurrent: 3' "$active"
+assert_config_state applied
+
+# Fail candidate startup only. Rollback must restore a running service
+# with the committed settings and keep the pending edit.
+sudo sed -i 's/max_concurrent: 3/max_concurrent: 4/' "$draft"
+sudo tee /etc/systemd/system/ephemera.service.d/fail-candidate.conf >/dev/null <<'UNIT'
+[Service]
+ExecStartPre=/bin/sh -c '! grep -q "max_concurrent: 4" /etc/ephemera/active/config.yaml'
+UNIT
+sudo systemctl daemon-reload
+if "${apply[@]}"; then
+  echo 'unhealthy candidate unexpectedly applied' >&2
+  exit 1
+fi
+systemctl is-active --quiet ephemera.service
+grep -q 'max_concurrent: 3' "$active"
+grep -q 'max_concurrent: 4' "$draft"
+assert_config_state pending
 sudo ephe service restart
 systemctl is-active --quiet ephemera.service
 test "$(systemctl show -p StatusText --value ephemera.service)" = Healthy

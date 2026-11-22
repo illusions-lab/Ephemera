@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -16,7 +15,7 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-func Run(path, appName string, existingApp bool) error {
+func Run(path, appName string, existingApp bool, apply func() error) error {
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		if err := configureFirstRun(path, appName, existingApp, true, config.Defaults(), nil); err != nil {
 			return finishSetup(err)
@@ -26,7 +25,7 @@ func Run(path, appName string, existingApp bool) error {
 		} else if err != nil {
 			return err
 		}
-		return finishSetup(applyService(path))
+		return finishSetup(apply())
 	} else if err != nil {
 		return err
 	}
@@ -47,11 +46,11 @@ func Run(path, appName string, existingApp bool) error {
 		}
 		switch action {
 		case "edit":
-			err = editConfig(path)
+			err = Edit(path)
 		case "image":
 			err = prepareFromCatalog(path)
 		case "apply":
-			err = applyService(path)
+			err = apply()
 		}
 		notice = ""
 		if err != nil && !errors.Is(err, huh.ErrUserAborted) {
@@ -67,39 +66,37 @@ func RunLocal(path, appName string, existingApp bool) error {
 	} else if err != nil {
 		return err
 	}
-	return finishSetup(editConfig(path))
+	return Edit(path)
 }
 
 func configureFirstRun(path, appName string, existingApp, systemSetup bool, cfg config.Config, validate func(config.Config, []byte) error) error {
+	if err := editRunner(&cfg); err != nil {
+		return err
+	}
+	// First-run setup enables image updates by default and lets the user opt out.
+	enabled := true
+	cfg.Runner.ImageAutoUpdate = &enabled
+	if err := editVM(&cfg); err != nil {
+		return err
+	}
+	if cfg.Runner.ImageAutoUpdate == nil {
+		cfg.Runner.ImageAutoUpdate = &enabled
+	}
 	if existingApp {
-		return editWithDefaults(path, cfg, validate)
+		return configureExistingApp(path, cfg, validate)
 	}
-	if err := ImageUpdatePrompt(&cfg); err != nil {
+	if err := editScaleSetRouting(&cfg); err != nil {
 		return err
 	}
-	connection, err := createGitHubApp(cfg.GitHub.ScaleSetName, appName, systemSetup, systemSetup || cfg.VM.Backend == "tart")
-	if err != nil {
-		return err
-	}
+	return createGitHubApp(cfg.GitHub.ScaleSetName, appName, systemSetup, systemSetup || cfg.VM.Backend == "tart",
+		func(connection githubConnection) error { return saveGitHubSetup(path, cfg, connection, validate) })
+}
+
+func saveGitHubSetup(path string, cfg config.Config, connection githubConnection, validate func(config.Config, []byte) error) error {
 	cfg.GitHub.ScopeURL, cfg.GitHub.ScaleSetName = connection.Scope, connection.ScaleSet
 	cfg.GitHub.AppID, cfg.GitHub.InstallationID = connection.AppID, connection.InstallationID
-	if err := cfg.Validate(); err != nil {
-		return err
-	}
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return err
-	}
-	ok, err := confirmSetup("Save this configuration?", cfg.GitHub.ScopeURL+" · "+cfg.GitHub.ScaleSetName)
-	if err != nil || !ok {
-		return err
-	}
-	if validate != nil {
-		if err := validate(cfg, connection.Key); err != nil {
-			return err
-		}
-	}
-	if err := config.WriteSetup(filepath.Dir(path), data, connection.Key); err != nil {
+	saved, err := writeFirstSetup(path, cfg, connection.Key, validate)
+	if err != nil || !saved {
 		return err
 	}
 	permission := "Organization self-hosted runners"
@@ -123,120 +120,59 @@ func finishSetup(err error) error {
 	return err
 }
 
-func editConfig(path string) error { return editWithDefaults(path, config.Defaults(), nil) }
-
-func editWithDefaults(path string, defaults config.Config, validate func(config.Config, []byte) error) error {
-	cfg, err := config.Load(path)
-	initial := errors.Is(err, os.ErrNotExist)
-	if initial {
-		cfg = defaults
-	} else if err != nil {
+func configureExistingApp(path string, cfg config.Config, validate func(config.Config, []byte) error) error {
+	if err := editGitHub(&cfg); err != nil {
 		return err
 	}
-
-	before, err := yaml.Marshal(cfg)
+	var keyPath string
+	if err := huh.NewInput().Title("Path to GitHub App private key").Value(&keyPath).Validate(func(path string) error {
+		_, err := config.ReadKey(strings.TrimSpace(path))
+		return err
+	}).Run(); err != nil {
+		return err
+	}
+	key, err := config.ReadKey(strings.TrimSpace(keyPath))
 	if err != nil {
 		return err
 	}
-	github := []huh.Field{
-		huh.NewInput().Title("GitHub repository or organization URL").Value(&cfg.GitHub.ScopeURL).Validate(config.ValidateScope),
-		huh.NewInput().Title("Runner Scale Set name").Value(&cfg.GitHub.ScaleSetName).Validate(func(name string) error {
-			if strings.TrimSpace(name) == "" {
-				return errors.New("enter a Runner Scale Set name")
-			}
-			return nil
-		}),
-	}
-	if err := huh.NewForm(huh.NewGroup(github...)).Run(); err != nil {
-		return err
-	}
-	if !initial {
-		limit := strconv.Itoa(cfg.Runner.MaxConcurrent)
-		cpus, memory := strconv.Itoa(cfg.VM.VCPUs), strconv.Itoa(cfg.VM.MemoryMiB)
-		startup, idle := cfg.Runner.StartupTimeout.String(), cfg.Runner.IdleTimeout.String()
-		beforeImage, beforeArch := cfg.VM.Image, cfg.VM.Arch
-		if err := huh.NewForm(huh.NewGroup(
-			huh.NewInput().Title("Maximum concurrent runners").Value(&limit).Validate(positiveNumber),
-			huh.NewInput().Title("Runner startup timeout").Value(&startup).Validate(positiveDuration),
-			huh.NewInput().Title("Runner idle timeout").Value(&idle).Validate(positiveDuration),
-			huh.NewInput().Title("Image tag (ubuntu or windows)").Value(&cfg.VM.Image),
-			huh.NewInput().Title("Image architecture (amd64 or arm64)").Value(&cfg.VM.Arch),
-			huh.NewInput().Title("VM CPU count").Value(&cpus).Validate(positiveNumber),
-			huh.NewInput().Title("VM memory (MiB)").Value(&memory).Validate(positiveNumber),
-		)).Run(); err != nil {
-			return err
-		}
-		cfg.Runner.MaxConcurrent, err = strconv.Atoi(strings.TrimSpace(limit))
-		if err != nil {
-			return err
-		}
-		cfg.VM.VCPUs, _ = strconv.Atoi(strings.TrimSpace(cpus))
-		cfg.VM.MemoryMiB, _ = strconv.Atoi(strings.TrimSpace(memory))
-		cfg.Runner.StartupTimeout, _ = time.ParseDuration(strings.TrimSpace(startup))
-		cfg.Runner.IdleTimeout, _ = time.ParseDuration(strings.TrimSpace(idle))
-		if cfg.VM.Image != beforeImage || cfg.VM.Arch != beforeArch {
-			cfg.VM.Profile = ""
-		}
-	}
-	if err := ImageUpdatePrompt(&cfg); err != nil {
-		return err
-	}
-	var key []byte
-	app, installation := "", ""
-	if !initial {
-		app = strconv.FormatInt(cfg.GitHub.AppID, 10)
-		installation = strconv.FormatInt(cfg.GitHub.InstallationID, 10)
-	}
-	fields := []huh.Field{
-		huh.NewInput().Title("GitHub App ID").Value(&app).Validate(positiveNumber),
-		huh.NewInput().Title("GitHub App installation ID").Value(&installation).Validate(positiveNumber),
-	}
-	var keyPath string
-	if initial {
-		fields = append(fields, huh.NewInput().Title("Path to GitHub App private key").Value(&keyPath).Validate(func(path string) error {
-			_, err := config.ReadKey(strings.TrimSpace(path))
-			return err
-		}))
-	}
-	if err := huh.NewForm(huh.NewGroup(fields...)).Run(); err != nil {
-		return err
-	}
-	if initial {
-		key, err = config.ReadKey(strings.TrimSpace(keyPath))
-		if err != nil {
-			return err
-		}
-	}
-	cfg.GitHub.AppID, _ = strconv.ParseInt(strings.TrimSpace(app), 10, 64)
-	cfg.GitHub.InstallationID, _ = strconv.ParseInt(strings.TrimSpace(installation), 10, 64)
+	_, err = writeFirstSetup(path, cfg, key, validate)
+	return err
+}
+
+func writeFirstSetup(path string, cfg config.Config, key []byte, validate func(config.Config, []byte) error) (bool, error) {
 	if err := cfg.Validate(); err != nil {
-		return err
+		return false, err
 	}
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if !initial && bytes.Equal(before, data) {
-		fmt.Println("Configuration is already up to date.")
-		return nil
+	mode := "Observe only"
+	if cfg.Runner.Execute {
+		mode = "Execute jobs when service starts"
 	}
-	summary := fmt.Sprintf("%s · %s\nGitHub App %d · installation %d\n%s/%s · %d CPUs · %d MiB\n%d runners · startup %s · idle %s",
-		cfg.GitHub.ScopeURL, cfg.GitHub.ScaleSetName, cfg.GitHub.AppID, cfg.GitHub.InstallationID,
-		cfg.VM.Image, cfg.VM.Arch, cfg.VM.VCPUs, cfg.VM.MemoryMiB, cfg.Runner.MaxConcurrent,
-		cfg.Runner.StartupTimeout, cfg.Runner.IdleTimeout)
+	machine := cfg.VM.Image + "/" + cfg.VM.Arch
+	if cfg.VM.Backend == "tart" {
+		machine = cfg.VM.ImageRef
+	}
+	resources := fmt.Sprintf("%d CPUs · %d MiB per VM", cfg.VM.VCPUs, cfg.VM.MemoryMiB)
+	if cfg.VM.Backend == "qemu" {
+		resources += fmt.Sprintf(" · %d GiB guest disk", max(12, cfg.VM.DiskGiB))
+	}
+	summary := fmt.Sprintf("%s · %s\nRunner group %s\nLabels: %s\n%s · up to %d runners\n%s\n%s",
+		cfg.GitHub.ScopeURL, cfg.GitHub.ScaleSetName, cfg.RunnerGroup(),
+		strings.Join(append([]string{cfg.GitHub.ScaleSetName}, cfg.ScaleSetLabels()...), ", "), mode, cfg.Runner.MaxConcurrent, machine, resources)
 	ok, err := confirmSetup("Save this configuration?", summary)
 	if err != nil || !ok {
-		return err
+		return false, err
 	}
-	if initial {
-		if validate != nil {
-			if err := validate(cfg, key); err != nil {
-				return err
-			}
+	if validate != nil {
+		if err := validate(cfg, key); err != nil {
+			return false, err
 		}
-		return config.WriteSetup(filepath.Dir(path), data, key)
 	}
-	return saveEditedConfig(path, before, data)
+	err = config.WriteSetup(filepath.Dir(path), data, key)
+	return err == nil, err
 }
 
 func saveEditedConfig(path string, before, data []byte) error {
@@ -274,41 +210,6 @@ func confirmSetup(title, description string) (bool, error) {
 	var confirmed bool
 	err := huh.NewConfirm().Title(title).Description(description).Value(&confirmed).Run()
 	return confirmed, err
-}
-
-func applyService(path string) error {
-	cfg, err := config.Load(path)
-	if err != nil {
-		return err
-	}
-	ok, err := confirmSetup("Apply configuration now?", "This starts Ephemera or restarts the running service.")
-	if err != nil || !ok {
-		return err
-	}
-	if cfg.Runner.ImageAutoUpdate == nil {
-		if err := ImageUpdatePrompt(&cfg); err != nil {
-			return err
-		}
-		data, err := yaml.Marshal(cfg)
-		if err != nil {
-			return err
-		}
-		if err := config.Replace(path, data); err != nil {
-			return err
-		}
-	}
-	for _, operation := range []string{"enable", "restart"} {
-		cmd := exec.Command("systemctl", operation, "ephemera.service")
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("systemctl %s ephemera.service: %w", operation, err)
-		}
-	}
-	if err := exec.Command("systemctl", "is-active", "--quiet", "ephemera.service").Run(); err != nil {
-		return fmt.Errorf("Ephemera service is not active: %w", err)
-	}
-	fmt.Println("Ephemera service is active.")
-	return nil
 }
 
 func ConfigureMac(path, appName string, existingApp bool, validate func(config.Config, []byte) error) error {

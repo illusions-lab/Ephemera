@@ -17,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/illusions-lab/Ephemera/internal/host"
 	"github.com/illusions-lab/Ephemera/internal/image"
@@ -39,10 +40,12 @@ func MacDefaults() Config {
 type Config struct {
 	Version int
 	GitHub  struct {
-		ScopeURL       string `yaml:"scope_url"`
-		ScaleSetName   string `yaml:"scale_set_name"`
-		AppID          int64  `yaml:"app_id"`
-		InstallationID int64  `yaml:"installation_id"`
+		RunnerGroup    string    `yaml:"runner_group,omitempty"`
+		Labels         *[]string `yaml:"labels,omitempty"`
+		ScopeURL       string    `yaml:"scope_url"`
+		ScaleSetName   string    `yaml:"scale_set_name"`
+		AppID          int64     `yaml:"app_id"`
+		InstallationID int64     `yaml:"installation_id"`
 	}
 	Runner struct {
 		ImageAutoUpdate *bool         `yaml:"image_auto_update,omitempty"`
@@ -94,6 +97,40 @@ func Load(path string) (Config, error) {
 	return cfg, cfg.Validate()
 }
 
+func (cfg Config) RunnerGroup() string {
+	if name := strings.TrimSpace(cfg.GitHub.RunnerGroup); name != "" {
+		return name
+	}
+	return "Default"
+}
+
+func (cfg Config) ScaleSetLabels() []string {
+	var labels []string
+	switch cfg.VM.Backend {
+	case "tart":
+		labels = []string{"self-hosted", "macOS", "ARM64"}
+	case "qemu":
+		switch cfg.VM.Image {
+		case "ubuntu":
+			labels = []string{"self-hosted", "Linux"}
+		case "windows":
+			labels = []string{"self-hosted", "Windows"}
+		}
+		if len(labels) != 0 {
+			switch cfg.VM.Arch {
+			case "amd64":
+				labels = append(labels, "X64")
+			case "arm64":
+				labels = append(labels, "ARM64")
+			}
+		}
+	}
+	if cfg.GitHub.Labels != nil {
+		labels = append(labels, (*cfg.GitHub.Labels)...)
+	}
+	return labels
+}
+
 func ValidateScope(value string) error {
 	scope, err := url.Parse(value)
 	if err != nil || scope.Scheme != "https" || scope.Hostname() == "" ||
@@ -141,6 +178,13 @@ func (cfg Config) Validate() error {
 	}
 	if cfg.VM.Profile != "" && (cfg.VM.Profile != "ubuntu-24.04" || cfg.VM.Image != "ubuntu" || (cfg.VM.Arch != "amd64" && cfg.VM.Arch != "arm64")) {
 		return errors.New("vm.profile must name an available recipe for the selected image and architecture")
+	}
+	if cfg.GitHub.Labels != nil {
+		for _, label := range *cfg.GitHub.Labels {
+			if label == "" || label != strings.TrimSpace(label) || strings.Contains(label, ",") || strings.ContainsFunc(label, unicode.IsControl) {
+				return fmt.Errorf("invalid github.labels entry %q", label)
+			}
+		}
 	}
 	for tag, architectures := range cfg.ImageSources {
 		for arch, source := range architectures {

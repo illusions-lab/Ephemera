@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,6 +22,9 @@ import (
 type Candidate struct {
 	Config, Key             []byte
 	ReplaceEditable         bool
+	ConfigDigest            string
+	WaitOnly                bool
+	BeforeSwitch            func() error
 	Scope, ScaleSet, Intake string
 }
 
@@ -50,8 +54,39 @@ func Activate(ctx context.Context, release string, prepare func() (*Candidate, e
 	return a.run(ctx, release, prepare)
 }
 
+// ActiveConfigPath reads the snapshot pinned by the installed LaunchAgent.
+func ActiveConfigPath(ctx context.Context) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	plist := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
+	if _, err := os.Stat(plist); errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	} else if err != nil {
+		return "", err
+	}
+	args, err := exec.CommandContext(ctx, "/usr/bin/plutil", "-extract", "ProgramArguments", "json", "-o", "-", plist).Output()
+	if err != nil {
+		return "", fmt.Errorf("read active LaunchAgent configuration: %w", err)
+	}
+	var arguments []string
+	if err := json.Unmarshal(args, &arguments); err != nil {
+		return "", err
+	}
+	for index, arg := range arguments {
+		if arg == "--config" && index+1 < len(arguments) {
+			return arguments[index+1], nil
+		}
+		if value, ok := strings.CutPrefix(arg, "--config="); ok {
+			return value, nil
+		}
+	}
+	return "", nil
+}
+
 func (a activation) run(ctx context.Context, release string, prepare func() (*Candidate, error)) (result error) {
-	fd, err := unix.Open(filepath.Join(a.root, ".activation.lock"), unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
+	fd, err := openActivationLock(a.root)
 	if err != nil {
 		return err
 	}
@@ -65,7 +100,7 @@ func (a activation) run(ctx context.Context, release string, prepare func() (*Ca
 	if err := a.recoverLegacy(); err != nil {
 		return err
 	}
-	journal := filepath.Join(a.root, ".activation-transaction.json")
+	journal := filepath.Join(a.root, activationJournal)
 	data, err := os.ReadFile(journal)
 	if err == nil {
 		var previous previousService
@@ -124,6 +159,11 @@ func (a activation) run(ctx context.Context, release string, prepare func() (*Ca
 		return err
 	}
 	activate := func() (result error) {
+		if candidate.BeforeSwitch != nil {
+			if err := candidate.BeforeSwitch(); err != nil {
+				return err
+			}
+		}
 		if err := replaceFile(journal, data); err != nil {
 			return err
 		}
@@ -159,9 +199,12 @@ func (a activation) run(ctx context.Context, release string, prepare func() (*Ca
 		if err := a.setCurrent(release); err != nil {
 			return err
 		}
-		return os.Remove(journal)
+		return removeIfPresent(journal)
 	}
 	if previous.Loaded {
+		if candidate.WaitOnly {
+			return control.DrainWait(ctx, filepath.Join(a.root, "state"), os.Stderr, activate)
+		}
 		return control.Drain(ctx, filepath.Join(a.root, "state"), os.Stdin, os.Stderr, activate)
 	}
 	return activate()
@@ -175,7 +218,7 @@ func (a activation) recover(journal string, previous previousService) error {
 	if err := a.restore(previous); err != nil {
 		return fmt.Errorf("restore previous LaunchAgent using %s: %w", journal, err)
 	}
-	return os.Remove(journal)
+	return removeIfPresent(journal)
 }
 
 func (a activation) restore(previous previousService) error {
@@ -229,7 +272,10 @@ func (a activation) setCurrent(target string) error {
 	if err := os.Symlink(target, link); err != nil {
 		return err
 	}
-	return os.Rename(link, path)
+	if err := os.Rename(link, path); err != nil {
+		return err
+	}
+	return syncDirectory(a.root)
 }
 
 func (a activation) waitReady(ctx context.Context, id string, candidate *Candidate) error {
@@ -241,7 +287,8 @@ func (a activation) waitReady(ctx context.Context, id string, candidate *Candida
 		s, err := status.Read(ctx, filepath.Join(a.root, "state", "status.sock"))
 		if err == nil && s.ActivationID == id && s.Scope == candidate.Scope &&
 			s.ScaleSet == candidate.ScaleSet && s.Intake == candidate.Intake &&
-			s.Phase == "Healthy" && s.GitHub == "connected" {
+			s.Phase == "Healthy" && s.GitHub == "connected" &&
+			(candidate.ConfigDigest == "" || s.ConfigDigest == candidate.ConfigDigest) {
 			return nil
 		}
 		select {
@@ -265,7 +312,10 @@ func removeIfPresent(path string) error {
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(path))
 }
 
 func replaceFile(path string, data []byte) error {
@@ -278,7 +328,19 @@ func replaceFile(path string, data []byte) error {
 	if err := errors.Join(writeErr, tmp.Sync(), tmp.Close()); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(path))
+}
+
+func syncDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func launchAgent(ctx context.Context, release, snapshot, id, log string) ([]byte, error) {

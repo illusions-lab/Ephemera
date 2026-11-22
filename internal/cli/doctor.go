@@ -105,7 +105,7 @@ func diagnose(ctx context.Context, output io.Writer, paths doctorPaths, checks d
 	} else {
 		probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		found, err := checks.probeScaleSet(probeCtx, orders.Config{
-			ScopeURL: cfg.GitHub.ScopeURL, ScaleSetName: cfg.GitHub.ScaleSetName,
+			ScopeURL: cfg.GitHub.ScopeURL, ScaleSetName: cfg.GitHub.ScaleSetName, RunnerGroup: cfg.RunnerGroup(),
 			AppID: cfg.GitHub.AppID, InstallationID: cfg.GitHub.InstallationID, PrivateKey: key,
 		})
 		cancel()

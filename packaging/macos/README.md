@@ -30,19 +30,27 @@ To use credentials for an existing GitHub App, pass `--existing-app`. For
 unattended setup, pass `--non-interactive --config /path/to/config.yaml
 --github-app-key /path/to/github-app.pem` with a valid Tart configuration.
 Unattended setup uses the supplied execution setting and skips power changes.
-Interactive setup defaults to `runner.execute: false` with a concurrency of
-one. To enable execution, edit `config.yaml` and run `ephe setup` to apply it.
+Interactive setup asks whether to observe or execute jobs and lets you
+choose the runner limit, Tart image, CPU count, and memory. Use `ephe config`
+to edit these settings later, including over SSH. Run `ephe config apply`
+to review and activate the saved change. The service account needs an active
+macOS graphical login session for activation. It can be locked while the
+command is run over SSH. Scripts can pass `--yes` to confirm the apply and
+wait for current jobs without a terminal.
 Use `ephe doctor`, `ephe status`, and
 `tail -F "$HOME/Library/Logs/Ephemera/daemon.log"` to inspect the service.
 
 Rerun the installer to upgrade, or pass `--version TAG` to select a specific
 release. Installation and direct `ephe setup` use the same activation
 transaction. The active LaunchAgent reads the YAML and PEM from its private
-activation snapshot. Editing `config.yaml` takes effect when setup activates
-it. If the candidate fails to become healthy, setup restores the previous
+activation snapshot. Ordinary service restarts use that snapshot until you
+apply a saved edit. Check `ephe status` for pending changes and `ephe ps -a`
+for local runners and cleanup. If the candidate fails to become healthy, setup restores the previous
 service and keeps the editable inputs for a retry. If setup is killed during
-the switch, rerun setup or the installer to recover. If recovery fails, use
-the reported journal path when investigating the failure.
+the switch, the next LaunchAgent startup checks the recovery journal and
+restores the previous service. Rerunning setup or the installer can also
+recover the transaction. If recovery fails, use the reported journal path
+when investigating the failure.
 
 For a local build, run `make bundle-macos`, place the version listed in
 `bin/macos-bundle/tart-manifest.tsv` at

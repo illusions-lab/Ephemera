@@ -27,6 +27,10 @@ type ImageUpdate struct {
 }
 
 type Snapshot struct {
+	InstanceRows  []Instance   `json:"-"`
+	ConfigDigest  string       `json:"config_digest,omitempty"`
+	RunnerGroup   string       `json:"runner_group,omitempty"`
+	Labels        *[]string    `json:"labels,omitempty"`
 	ImageUpdate   *ImageUpdate `json:"image_update,omitempty"`
 	ActivationID  string       `json:"activation_id,omitempty"`
 	Phase         string       `json:"phase"`
@@ -39,6 +43,13 @@ type Snapshot struct {
 	Intake        string       `json:"intake"`
 	MaxConcurrent int          `json:"max_concurrent,omitempty"`
 	Demand        *Demand      `json:"demand,omitempty"`
+}
+
+type Instance struct {
+	ID        string    `json:"id"`
+	Runner    string    `json:"runner"`
+	State     string    `json:"state"`
+	CreatedAt time.Time `json:"created_at,omitzero"`
 }
 
 type Instances struct {
@@ -76,6 +87,15 @@ func Listen(path string, snapshot func() Snapshot) (func() error, error) {
 		w.Header().Set("Cache-Control", "no-store")
 		_ = json.NewEncoder(w).Encode(snapshot())
 	})
+	mux.HandleFunc("GET /v1/instances", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		rows := snapshot().InstanceRows
+		if rows == nil {
+			rows = []Instance{}
+		}
+		_ = json.NewEncoder(w).Encode(rows)
+	})
 	server := &http.Server{
 		Handler: mux, ReadHeaderTimeout: 2 * time.Second, WriteTimeout: 2 * time.Second,
 		IdleTimeout: 2 * time.Second, MaxHeaderBytes: 4096,
@@ -90,18 +110,7 @@ func Listen(path string, snapshot func() Snapshot) (func() error, error) {
 }
 
 func Read(ctx context.Context, path string) (Snapshot, error) {
-	transport := &http.Transport{
-		DisableKeepAlives: true,
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", path)
-		},
-	}
-	client := &http.Client{Transport: transport, Timeout: 2 * time.Second}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost/v1/status", nil)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	response, err := client.Do(request)
+	response, err := readEndpoint(ctx, path, "/v1/status")
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -117,6 +126,43 @@ func Read(ctx context.Context, path string) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("daemon status is missing its phase")
 	}
 	return snapshot, nil
+}
+
+func ReadInstances(ctx context.Context, path string) ([]Instance, error) {
+	response, err := readEndpoint(ctx, path, "/v1/instances")
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		return nil, errors.New("running daemon does not support ephe ps; upgrade and restart it")
+	}
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("instances endpoint returned HTTP %d", response.StatusCode)
+	}
+	var instances []Instance
+	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&instances); err != nil {
+		return nil, fmt.Errorf("decode daemon instances: %w", err)
+	}
+	if instances == nil {
+		return nil, errors.New("daemon returned an invalid instance list")
+	}
+	return instances, nil
+}
+
+func readEndpoint(ctx context.Context, path, endpoint string) (*http.Response, error) {
+	transport := &http.Transport{
+		DisableKeepAlives: true,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", path)
+		},
+	}
+	client := &http.Client{Transport: transport, Timeout: 2 * time.Second}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost"+endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	return client.Do(request)
 }
 
 // RemoveStale is called while holding the private instance directory lock.

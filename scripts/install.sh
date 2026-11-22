@@ -4,8 +4,9 @@ set -euo pipefail
 die() { printf 'install: %s\n' "$*" >&2; exit 1; }
 usage() { printf '%s\n' 'Usage: sudo bash install.sh [--version TAG | --bundle DIR] [--non-interactive --config FILE --github-app-key FILE]' '       ephe update [--check | --apply]'; }
 recovery_mode=
+apply_yes=false
 case "${1:-}" in
-  --recover|--recover-boot|--guard-start) recovery_mode=$1; shift;;
+  --recover|--recover-boot|--guard-start|--apply-config) recovery_mode=$1; shift;;
 esac
 version='' bundle='' config='' key='' mode=install
 non_interactive=false
@@ -14,6 +15,7 @@ while (($#)); do
     --version|--bundle|--config|--github-app-key)
       [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || die "$1 requires a value"
       case "$1" in --version) version=$2;; --bundle) bundle=$2;; --config) config=$2;; --github-app-key) key=$2;; esac; shift 2;;
+    --yes) [[ "$recovery_mode" == --apply-config ]] || die 'unexpected --yes'; apply_yes=true; shift;;
     --non-interactive) non_interactive=true; shift;;
     --update) mode=stage; shift;;
     --check) [[ "$mode" == stage ]] || die 'unexpected --check'; mode=check; shift;;
@@ -32,6 +34,8 @@ staged=$root/staged
 unit=/etc/systemd/system/ephemera.service
 destination=/etc/ephemera/config.yaml
 credential=/etc/ephemera/credentials/github-app.pem
+active_config=/etc/ephemera/active
+activations=/etc/ephemera/activations
 releases=https://github.com/illusions-lab/Ephemera/releases
 fetch=(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --retry 2)
 case "$(uname -m)" in
@@ -77,6 +81,14 @@ mkdir -p "$root/releases"
 txn=$root/transaction
 atomic_link() { ln -sfn "$1" "$2.new"; mv -Tf "$2.new" "$2"; }
 restore_files() {
+  if [[ -f "$txn/restore-config" ]]; then
+    if [[ -f "$txn/previous-config" ]]; then
+      atomic_link "$(cat "$txn/previous-config")" "$active_config" || return
+    else
+      rm -f "$active_config" || return
+    fi
+    sync -f /etc/ephemera || return
+  fi
   if [[ -f "$txn/disable" ]]; then
     rm -f /etc/systemd/system/multi-user.target.wants/ephemera.service || return
   fi
@@ -142,6 +154,97 @@ fi
 rollback || die 'rollback failed; transaction and releases retained for repair'
 if [[ "$recovery_mode" == --recover ]]; then exit 0; fi
 
+finish_install() {
+  local result=$?
+  trap - EXIT
+  trap '' INT TERM
+  if (( result != 0 )); then
+    rollback || printf 'install: rollback failed; transaction and releases retained for repair\n' >&2
+  fi
+  rm -rf -- "$temp"
+  exit "$result"
+}
+trap finish_install EXIT
+config_child=
+interrupt_install() {
+  if [[ -n "$config_child" ]]; then
+    kill -TERM "$config_child" 2>/dev/null || true
+    wait "$config_child" 2>/dev/null || true
+  fi
+  exit "$1"
+}
+trap 'interrupt_install 130' INT
+trap 'interrupt_install 143' TERM
+
+run_config_step() {
+  local result=0
+  "$@" <&0 9>&- &
+  config_child=$!
+  wait "$config_child" || result=$?
+  config_child=
+  return "$result"
+}
+begin_transaction() {
+  mkdir "$temp/transaction"
+  [[ ! -L "$current" ]] || readlink "$current" > "$temp/transaction/previous"
+  [[ ! -f "$unit" ]] || cp "$unit" "$temp/transaction/unit"
+  if [[ "$1" == config ]]; then
+    touch "$temp/transaction/restore-config"
+    [[ ! -L "$active_config" ]] || readlink "$active_config" > "$temp/transaction/previous-config"
+  fi
+  cat /proc/sys/kernel/random/boot_id > "$temp/transaction/boot-id"
+  local service_state
+  service_state=$(systemctl show --property=ActiveState --value ephemera.service) || die 'could not determine current service state'
+  case "$service_state" in
+    active|activating|reloading|deactivating) touch "$temp/transaction/active" ;;
+    inactive|failed) ;;
+    *) die "cannot verify that the service is stopped ($service_state)" ;;
+  esac
+  mv "$temp/transaction" "$txn"
+  sync -f "$root"
+}
+
+publish_config() {
+  # Move a complete, durable pair into the snapshot store before publishing the link.
+  local generation
+  generation=$(mktemp -d "$activations/config.XXXXXXXX")
+  chmod 0755 "$generation"
+  install -m 0644 "$1/config.yaml" "$generation/config.yaml"
+  install -m 0600 "$1/github-app.pem" "$generation/github-app.pem"
+  sync -f "$generation"
+  atomic_link "$generation" "$active_config"
+  sync -f /etc/ephemera
+}
+
+if [[ "$recovery_mode" == --apply-config ]]; then
+  [[ -x "$current/ephemera" && -f "$unit" ]] || die 'install Ephemera before applying its configuration'
+  install -d -m 0755 "$activations"
+  mkdir -m 0700 "$temp/config"
+  prepare=()
+  if "$apply_yes"; then prepare+=(--yes); fi
+  run_config_step "$current/ephemera" config --apply-step prepare "$temp/config" "${prepare[@]}"
+  [[ -f "$temp/config/digest" ]] || exit 0
+  begin_transaction config
+  if [[ -f "$txn/active" ]]; then
+    run_config_step "$current/ephemera" config --apply-step stop "$temp/config"
+  else
+    "$current/ephemera" config --apply-step check-recovery "$temp/config" 9>&-
+  fi
+  touch "$txn/switching"
+  sync -f "$root"
+  publish_config "$temp/config"
+  if ! systemctl is-enabled --quiet ephemera.service; then
+    touch "$txn/disable"
+    sync -f "$root"
+    systemctl enable ephemera.service
+  fi
+  run_config_step systemctl start ephemera.service
+  "$current/ephemera" config --apply-step verify "$temp/config" 9>&-
+  finish_transaction
+  printf 'Configuration applied.\n'
+  exit 0
+fi
+
 first=true
 resume=false
 replace_residue=false
@@ -161,21 +264,10 @@ if ! "$first"; then
     [[ -n "$config" ]] || die 'first install retry requires the original config and key'
     resume=true
   fi
-  [[ -f "$credential" && ! -L "$credential" && "$(stat -c '%u:%a' "$credential")" == 0:600 ]] || die 'invalid GitHub App private key permissions'
+  installed_key=$credential
+  if [[ -f "$active_config/config.yaml" ]]; then installed_key=$active_config/github-app.pem; fi
+  [[ -f "$installed_key" && ! -L "$installed_key" && "$(stat -c '%u:%a' "$installed_key")" == 0:600 ]] || die 'invalid GitHub App private key permissions'
 fi
-finish_install() {
-  local result=$?
-  trap - EXIT
-  trap '' INT TERM
-  if (( result != 0 )); then
-    rollback || printf 'install: rollback failed; transaction and releases retained for repair\n' >&2
-  fi
-  rm -rf -- "$temp"
-  exit "$result"
-}
-trap finish_install EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
 if "$first" && "$non_interactive" && [[ -n "$key" && ( -e "$credential" || -L "$credential" ) ]]; then
   replace_residue=true
 fi
@@ -219,7 +311,9 @@ if [[ "$mode" != apply ]]; then
     if "$replace_residue"; then setup_args+=(--recover-residual-key); fi
     "$temp/ephemera" setup "${setup_args[@]}"
   fi
-  [[ ! -f "$destination" ]] || "$temp/ephemera" config validate --config "$destination"
+  selected_config=$destination
+  if [[ -f "$active_config/config.yaml" ]]; then selected_config=$active_config/config.yaml; fi
+  [[ ! -f "$selected_config" ]] || "$temp/ephemera" config validate --config "$selected_config"
   # The content hash keeps development bundles and repeated versions distinct.
   id=$(cat "$temp/ephemera" "$temp/ephemerad" "$bundle/ephemera.service" | sha256sum | cut -c1-16)
   target=$root/releases/$id
@@ -237,7 +331,9 @@ if [[ "$mode" != apply ]]; then
 fi
 [[ -x "$staged/ephemera" ]] || die 'no staged release'
 if [[ "$mode" == apply ]]; then printf 'Target: %s\n' "$("$staged/ephemera" version)"; fi
-[[ ! -f "$destination" ]] || "$staged/ephemera" config validate --config "$destination"
+selected_config=$destination
+if [[ -f "$active_config/config.yaml" ]]; then selected_config=$active_config/config.yaml; fi
+[[ ! -f "$selected_config" ]] || "$staged/ephemera" config validate --config "$selected_config"
 # Preserve an existing flat installation as a rollback target before replacing it.
 if [[ ! -L "$current" && -f /usr/local/bin/ephemera && ! -L /usr/local/bin/ephemera ]]; then
   legacy=$root/releases/legacy
@@ -281,23 +377,22 @@ UNIT
 install -m 0644 "$temp/recovery-unit" /etc/systemd/system/ephemera-recover.service
 sync -f "$root"
 sync -f /etc/systemd/system
-mkdir "$temp/transaction"
-[[ ! -L "$current" ]] || readlink "$current" > "$temp/transaction/previous"
-[[ ! -f "$unit" ]] || cp "$unit" "$temp/transaction/unit"
-cat /proc/sys/kernel/random/boot_id > "$temp/transaction/boot-id"
-service_state=$(systemctl show --property=ActiveState --value ephemera.service) || die 'could not determine current service state'
-case "$service_state" in
-  active|activating|reloading|deactivating) touch "$temp/transaction/active" ;;
-  inactive|failed) ;;
-  *) die "cannot verify that the service is stopped ($service_state); staged version retained at $staged" ;;
-esac
-mv "$temp/transaction" "$txn"
-sync -f "$root"
+transaction_type=release
+if [[ ! -e "$active_config" && -f "$destination" ]]; then transaction_type=config; fi
+begin_transaction "$transaction_type"
 if [[ -f "$txn/active" ]]; then
   "$staged/ephemera" service stop 9>&- || die "upgrade paused; staged version retained at $staged"
 fi
 touch "$txn/switching"
 sync -f "$root"
+if [[ "$transaction_type" == config ]]; then
+  install -d -m 0755 "$activations"
+  mkdir -m 0700 "$temp/config"
+  install -m 0644 "$destination" "$temp/config/config.yaml"
+  install -m 0600 "$credential" "$temp/config/github-app.pem"
+  "$staged/ephemera" config validate --config "$temp/config/config.yaml"
+  publish_config "$temp/config"
+fi
 atomic_link "$(readlink "$staged")" "$current"
 for binary in ephemera ephemerad; do atomic_link "$current/$binary" "/usr/local/bin/$binary"; done
 if [[ -e /usr/local/bin/ephe || -L /usr/local/bin/ephe ]]; then

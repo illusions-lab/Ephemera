@@ -71,6 +71,10 @@ func run(args []string) error {
 		}
 		logger = slog.New(slog.NewTextHandler(logOutput{output}, nil))
 	}
+	if err := macos.GuardStartup(ctx, *activationID); err != nil {
+		logger.Error("Recover interrupted activation", "error", err)
+		return err
+	}
 	err := service.Run(ctx, service.Options{ActivationID: *activationID, ImageChannelFile: *channelFile, ConfigPath: *path, CacheDir: *cacheDir, KeyPath: *keyPath, StatusSocket: *statusSocket, StateDir: *stateDir, Create: *create, Claim: *claim}, logger)
 	if err != nil && *logFile != "" {
 		logger.Error("Daemon stopped", "error", err)

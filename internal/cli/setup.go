@@ -82,7 +82,7 @@ func runSetup(args []string) error {
 		if !term.IsTerminal(os.Stdin.Fd()) || !term.IsTerminal(os.Stdout.Fd()) {
 			return errors.New("setup requires a terminal or --non-interactive with input files")
 		}
-		return setup.Run(destination, *appName, *existingApp)
+		return setup.Run(destination, *appName, *existingApp, func() error { return runConfigApply(nil) })
 	}
 	var err error
 	if *recoverKey {
@@ -126,7 +126,7 @@ func recoverSetupKey(dir, source, keyPath string) error {
 	}
 	return config.RecoverSetupKey(dir, data, key, func() error {
 		_, err := orders.ProbeScaleSet(ctx, orders.Config{
-			ScopeURL: cfg.GitHub.ScopeURL, ScaleSetName: cfg.GitHub.ScaleSetName,
+			ScopeURL: cfg.GitHub.ScopeURL, ScaleSetName: cfg.GitHub.ScaleSetName, RunnerGroup: cfg.RunnerGroup(),
 			AppID: cfg.GitHub.AppID, InstallationID: cfg.GitHub.InstallationID, PrivateKey: key,
 		})
 		if err != nil {

@@ -1,12 +1,16 @@
 # Copy to /etc/ephemera/config.yaml and replace the example values.
 # The systemd service loads the GitHub App private key as the
-# github-app-key credential from /etc/ephemera/credentials/github-app.pem.
+# github-app-key credential from the active snapshot. The editable key lives
+# at /etc/ephemera/credentials/github-app.pem. Run sudo ephe config apply
+# to activate saved changes.
 # Persistent service state belongs in /var/lib/ephemera.
 version: 1
 
 github:
   scope_url: https://github.com/example-org/ephemera-test
   scale_set_name: ephemera-ubuntu-amd64
+  # runner_group: Default
+  # labels: [build, ci]  # Additional labels beyond the Scale Set name and platform defaults.
   app_id: 123456
   installation_id: 789012
 

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -19,6 +20,8 @@ func Run(args []string) error {
 	case len(args) == 1 && args[0] == "version":
 		fmt.Println(version.String())
 		return nil
+	case len(args) == 2 && args[0] == "--recover-activation":
+		return macos.RecoverStartup(context.Background(), args[1])
 	case len(args) == 1 && args[0] == "tart-manifest":
 		fmt.Print(macos.TartManifest())
 		return nil
@@ -47,6 +50,8 @@ func Run(args []string) error {
 		return cmd.Run()
 	case args[0] == "service":
 		return runService(args[1:])
+	case args[0] == "ps":
+		return runPS(args[1:])
 	case args[0] == "status":
 		return runStatus(args[1:])
 	case args[0] == "doctor":
@@ -55,8 +60,8 @@ func Run(args []string) error {
 		return runSetup(args[1:])
 	case len(args) >= 2 && args[0] == "image" && args[1] == "prepare":
 		return prepareImage(args[2:])
-	case len(args) >= 2 && args[0] == "config" && args[1] == "validate":
-		return validateConfig(args[2:])
+	case args[0] == "config":
+		return runConfig(args[1:])
 	default:
 		return errors.New(usage)
 	}

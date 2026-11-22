@@ -59,9 +59,19 @@ Windows hosts are outside Ephemera's support scope and roadmap. In our tests on 
 
 ### Run a test workflow
 
-New installations start in observation mode. Confirm the GitHub connection with `ephe status`, then use a **dedicated test Scale Set** for [execution acceptance](#test-qemu-execution). Set `runner.execute: true` in the host configuration and apply it through `sudo ephe setup` on Linux or `ephe setup` on macOS.
+During initial setup, choose whether to observe or execute jobs, the maximum runner
+count, and the VM image and resources. Confirm the GitHub connection with
+`ephe status` and use a **dedicated test Scale Set** for
+[execution acceptance](#test-qemu-execution). To change the mode later, use
+`ephe config` and apply through `ephe config apply` (with `sudo` on Linux).
 
-Set your workflow's `runs-on` to the Scale Set name shown by `ephe status`. Replace the example below with your own name.
+The setup wizard asks for a GitHub runner group (default: `Default`) and
+optional extra labels. Ephemera registers the Scale Set name, `self-hosted`,
+and the guest OS and architecture labels. Set your workflow's `runs-on` to
+the Scale Set name shown by `ephe status` to target that specific set.
+If `github.labels` is absent, Ephemera preserves existing extra labels.
+If it is present, it defines the extra labels, and an empty list removes them.
+Changing the runner group selects or creates a Scale Set in the new group.
 
 ```yaml
 name: Ephemera smoke test
@@ -96,9 +106,38 @@ The [architecture document](ARCHITECTURE.md#runner-execution-design) covers sche
 | | Linux | macOS |
 | --- | --- | --- |
 | Configuration | `/etc/ephemera/config.yaml` | `~/Library/Application Support/Ephemera/config.yaml` |
-| Setup and apply | `sudo ephe setup` | `ephe setup` |
+| Edit without restarting | `sudo ephe config` | `ephe config` |
+| First setup | `sudo ephe setup` | `ephe setup` |
+| Apply saved configuration | `sudo ephe config apply` | `ephe config apply` |
 | Diagnostics | `sudo ephe doctor` | `ephe doctor` |
 | Service logs | `sudo journalctl -u ephemera.service -f` | `tail -F "$HOME/Library/Logs/Ephemera/daemon.log"` |
+
+The configuration editor opens over SSH and groups settings under Runner,
+VM and images, and GitHub connection. Review and save your edits, then apply
+them when you are ready. On macOS, use the following commands as the service
+account. On Linux, add `sudo` to the first two commands.
+
+```sh
+ephe config
+ephe config apply
+ephe status
+ephe ps
+```
+
+Use `ephe config validate` to check the saved YAML. Use
+`ephe config apply --yes` to confirm explicitly in scripts or over SSH
+without a terminal. Application checks the candidate and waits for local
+jobs before restarting. Until then, ordinary service restarts keep using
+the active snapshot. On Linux, the first upgrade to this layout establishes
+the active baseline from the existing configuration and private key.
+
+If activation fails, Ephemera restores the previous local service and
+keeps the saved draft. Correct it in `ephe config`, then apply again. A
+Scale Set or labels already written to GitHub may persist after local rollback.
+
+`ephe ps` lists the local runner VMs that are starting, waiting, executing,
+or finishing. Use `ephe ps -a` to include VM cleanup and pending GitHub
+deregistration, or `ephe ps -q` for one complete instance ID per line.
 
 On Linux, systemd-journald rotates and prunes service logs according to the host
 policy. It stores persistent journals under `/var/log/journal` and volatile
@@ -111,7 +150,7 @@ archives, and prunes archives older than 14 days when opening or rotating the
 log. After upgrading, logs from older versions can still be read at
 `~/Library/Application Support/Ephemera/logs/daemon.log`.
 
-`ephe status` shows the service, GitHub connection, intake mode, and latest job counts. Use `--watch` for continuous updates and `--json` for scripts. Together they emit one JSON object per refresh. If the daemon socket is unavailable, the CLI reports the supervisor state and marks live data as unavailable.
+`ephe status` shows the service, GitHub connection, intake mode, the effective GitHub group and labels, pending configuration changes, and latest job counts. Use `--watch` for continuous updates and `--json` for scripts. Together they emit one JSON object per refresh. If the daemon socket is unavailable, the CLI reports the supervisor state and marks live data as unavailable.
 
 `ephe doctor` checks configuration, GitHub App access, Scale Set connectivity, and the selected VM backend. On Linux it also checks the image cache, QEMU/KVM, and disk space. It never claims jobs or creates a Scale Set.
 
@@ -245,7 +284,7 @@ Dispatch the [dedicated Scale Set acceptance workflow](.github/workflows/executi
 4. Exercise a transient cleanup failure. Confirm the instance keeps its slot until cleanup succeeds.
 5. Confirm the base image is unchanged and GitHub has no stale runner registrations.
 
-Record the candidate commit, daemon version, Scale Set label, and workflow run for each platform. Release publishing runs through GitHub Actions. CI verifies the bundles, with Ubuntu VM acceptance and native macOS installer checks running separately.
+Record the candidate commit, daemon version, Scale Set label, and workflow run for each platform. GitHub Actions runs builds and installation checks in the CI workflow. Ubuntu VM acceptance runs independently and does not gate releases. The Release workflow starts after successful CI on the same main commit and verifies the packaged and public assets. To retry an existing tag, use the Release workflow’s `retry_tag` input on main.
 
 For a disposable Linux installer smoke test, use `make vm-test DEBIAN_IMAGE=... DEBIAN_SHA512=...` with a versioned Debian genericcloud AMD64 QCOW2 and its SHA-512. `make vm-debug` retains the test VM and prints its SSH command.
 

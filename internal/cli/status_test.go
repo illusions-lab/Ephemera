@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/illusions-lab/Ephemera/internal/config"
 	runtimeStatus "github.com/illusions-lab/Ephemera/internal/status"
 )
 
@@ -119,5 +120,44 @@ func TestStatusWatchJSON(t *testing.T) {
 	}
 	if r := reports[3]; r.Daemon == nil || r.Daemon.Demand == nil || r.Daemon.Demand.Available != 3 || r.DaemonUnavailable != "" {
 		t.Fatalf("expected fresh demand after reconnecting: %+v", r)
+	}
+}
+
+func TestStatusComparesSavedAndLoadedConfiguration(t *testing.T) {
+	data, err := os.ReadFile("../../configs/ephemera.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	write := func(data []byte) {
+		t.Helper()
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(data)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := config.Digest(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded := &runtimeStatus.Snapshot{ConfigDigest: digest}
+	write(append([]byte("# edited comment\n"), data...))
+	if got := compareConfiguration(path, loaded); got.State != "applied" {
+		t.Fatalf("comment change marked configuration %v", got)
+	}
+	write(bytes.Replace(data, []byte("scale_set_name: "), []byte("scale_set_name: new-"), 1))
+	if got := compareConfiguration(path, loaded); got.State != "pending" {
+		t.Fatalf("changed Scale Set marked configuration %v", got)
+	}
+	write([]byte("invalid:"))
+	if got := compareConfiguration(path, loaded); got.State != "unknown" || !strings.Contains(got.Detail, "invalid") {
+		t.Fatalf("invalid draft marked configuration %v", got)
+	}
+	if got := compareConfiguration(path, &runtimeStatus.Snapshot{}); got.State != "unknown" || !strings.Contains(got.Detail, "daemon does not report") {
+		t.Fatalf("legacy daemon marked configuration %v", got)
 	}
 }
