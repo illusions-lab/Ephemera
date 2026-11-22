@@ -175,7 +175,7 @@ func (a activation) run(ctx context.Context, release string, prepare func() (*Ca
 			}
 		}()
 		if previous.Loaded {
-			if err := launchctl(ctx, "bootout", a.domain+"/"+Label); err != nil {
+			if err := UnloadService(ctx, a.domain); err != nil {
 				return err
 			}
 		}
@@ -228,7 +228,7 @@ func (a activation) restore(previous previousService) error {
 		return err
 	}
 	if a.loaded(ctx) {
-		if err := launchctl(ctx, "bootout", a.domain+"/"+Label); err != nil {
+		if err := UnloadService(ctx, a.domain); err != nil {
 			return err
 		}
 	}
@@ -295,6 +295,34 @@ func (a activation) waitReady(ctx context.Context, id string, candidate *Candida
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-tick.C:
+		}
+	}
+}
+
+// UnloadService waits until launchd removes the label. A successful bootout
+// only means launchd accepted the stop request.
+func UnloadService(ctx context.Context, domain string) error {
+	wait, cancel := context.WithTimeout(ctx, 65*time.Second)
+	defer cancel()
+	target := domain + "/" + Label
+	if err := launchctl(wait, "bootout", target); err != nil {
+		return err
+	}
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := launchctl(wait, "print", target); err != nil {
+			if wait.Err() == nil && launchctl(wait, "print", domain) == nil {
+				return nil
+			}
+			if wait.Err() == nil {
+				return fmt.Errorf("cannot confirm removal of LaunchAgent %s: %w", target, err)
+			}
+		}
+		select {
+		case <-wait.Done():
+			return fmt.Errorf("wait for launchd to remove %s: %w", target, wait.Err())
+		case <-ticker.C:
 		}
 	}
 }

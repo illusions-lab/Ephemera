@@ -22,10 +22,20 @@ const launchctlFixture = `#!/bin/bash
 set -eu
 case "$1:$2" in
   print:gui/*/com.illusions-lab.ephemera.dev) exit 1 ;;
-  print:gui/*/com.illusions-lab.ephemera) test -f "$EPHE_ACTIVATION_TEST_ROOT/loaded" ;;
+  print:gui/*/com.illusions-lab.ephemera)
+    if [[ -f "$EPHE_ACTIVATION_TEST_ROOT/stopping" ]]; then
+      if [[ -f "$EPHE_ACTIVATION_TEST_ROOT/stop-seen" ]]; then
+        rm "$EPHE_ACTIVATION_TEST_ROOT/"{loaded,stopping,stop-seen}
+      else
+        touch "$EPHE_ACTIVATION_TEST_ROOT/stop-seen"
+      fi
+    fi
+    test -f "$EPHE_ACTIVATION_TEST_ROOT/loaded"
+    ;;
   print:*) exit 0 ;;
-  bootout:*) rm "$EPHE_ACTIVATION_TEST_ROOT/loaded" ;;
+  bootout:*) touch "$EPHE_ACTIVATION_TEST_ROOT/stopping" ;;
   bootstrap:*)
+    test ! -e "$EPHE_ACTIVATION_TEST_ROOT/loaded"
     daemon=$(/usr/bin/plutil -extract ProgramArguments.0 raw "$3")
     test ! -e "$(dirname "$daemon")/fail-bootstrap"
     printf '%s\n' "$daemon" > "$EPHE_ACTIVATION_TEST_ROOT/loaded"
