@@ -9,10 +9,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 
 	"github.com/illusions-lab/Ephemera/internal/config"
 	"github.com/illusions-lab/Ephemera/internal/image"
+	"github.com/illusions-lab/Ephemera/internal/macos"
 	"github.com/illusions-lab/Ephemera/internal/service"
 	"github.com/illusions-lab/Ephemera/internal/version"
 )
@@ -29,10 +31,14 @@ func run(args []string) error {
 		return nil
 	}
 	flags := flag.NewFlagSet("ephemerad", flag.ContinueOnError)
-	path := flags.String("config", filepath.Join(config.Dir, "config.yaml"), "configuration file")
+	path := flags.String("config", filepath.Join(config.DefaultDir(), "config.yaml"), "configuration file")
 	cacheDir := flags.String("image-cache", image.DefaultCache, "image cache directory")
-	stateDir := flags.String("state-dir", service.DefaultStateDir, "private runner instance directory")
-	statusSocket := flags.String("status-socket", "", "Unix socket path for the read-only status endpoint")
+	defaultState, defaultSocket := service.DefaultStateDir, ""
+	if runtime.GOOS == "darwin" {
+		defaultState, defaultSocket = macos.StateDir(), macos.Socket()
+	}
+	stateDir := flags.String("state-dir", defaultState, "private runner instance directory")
+	statusSocket := flags.String("status-socket", defaultSocket, "Unix socket path for the read-only status endpoint")
 	keyPath := flags.String("github-app-key", "", "override the GitHub App PEM path")
 	create := flags.Bool("create", false, "create the configured Scale Set if absent")
 	claim := flags.Bool("claim", false, "acquire jobs for a test Scale Set; this command does not launch runners")

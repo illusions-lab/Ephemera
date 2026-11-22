@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -18,20 +17,16 @@ const DefaultStateDir = "/var/lib/ephemera/instances"
 
 type listenFunc func(context.Context, orders.Config, *slog.Logger, func(context.Context, orders.Update) error) error
 
-func execute(ctx context.Context, cfg config.Config, github orders.Config, imagePath string, store instanceStore,
+func execute(ctx context.Context, cfg config.Config, github orders.Config, imageID, namespace string, store instanceStore,
 	backend vm.Backend, logger *slog.Logger, listen listenFunc,
 	report func(bool, bool, bool, orders.Update, status.Instances) error,
 ) error {
-	imagePath, err := filepath.Abs(imagePath)
-	if err != nil {
-		return err
-	}
 	runners, err := orders.NewRunners(github)
 	if err != nil {
 		return err
 	}
 	template := vm.Instance{
-		Backend: cfg.VM.Backend, Image: imagePath,
+		Backend: cfg.VM.Backend, Image: imageID, Namespace: namespace,
 		Scope: github.ScopeURL, ScaleSet: github.ScaleSetName,
 	}
 	restored, err := store.load()

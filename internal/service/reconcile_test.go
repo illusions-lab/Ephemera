@@ -337,3 +337,20 @@ func TestExecutionListenerReconnectsWithFreshDemand(t *testing.T) {
 		t.Fatal("listener did not stop on cancellation")
 	}
 }
+
+func TestRecoveryRequiresOriginalTartHome(t *testing.T) {
+	i := vm.Instance{Scope: "https://github.com/example", Backend: "tart", Namespace: "/original/tart"}
+	template := i
+	template.Image = "new-immutable-image"
+	if err := validateRestored([]vm.Instance{i}, template); err != nil {
+		t.Fatal(err)
+	}
+	template.Namespace = "/other/tart"
+	if err := validateRestored([]vm.Instance{i}, template); err == nil {
+		t.Fatal("accepted recovery with a different Tart home")
+	}
+	i.Backend, i.Namespace = "qemu", ""
+	if err := validateRestored([]vm.Instance{i}, i); err != nil {
+		t.Fatalf("legacy QEMU record rejected: %v", err)
+	}
+}

@@ -5,6 +5,7 @@ import "context"
 // Instance identifies resources across daemon restarts.
 type Instance struct {
 	ID, Backend, Image, Resource string
+	Namespace                    string `json:",omitempty"`
 	Scope, ScaleSet              string
 	ScaleSetID, RunnerID         int
 }

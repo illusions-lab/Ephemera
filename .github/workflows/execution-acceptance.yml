@@ -6,6 +6,11 @@ on:
         description: Runner label of the dedicated test Scale Set
         required: true
         type: string
+      guest_os:
+        description: Expected guest operating system
+        type: choice
+        options: [linux, macos]
+        default: linux
       arch:
         description: Expected guest architecture
         type: choice
@@ -30,17 +35,24 @@ jobs:
       - name: Record guest identity
         shell: bash
         env:
+          EXPECTED_OS: ${{ inputs.guest_os }}
           EXPECTED_ARCH: ${{ inputs.arch }}
         run: |
           set -euo pipefail
-          case "$EXPECTED_ARCH" in
-            amd64) test "$(uname -m)" = x86_64 ;;
-            arm64) test "$(uname -m)" = aarch64 ;;
+          case "$EXPECTED_OS:$EXPECTED_ARCH" in
+            linux:amd64) test "$(uname -sm)" = "Linux x86_64" ;;
+            linux:arm64) test "$(uname -sm)" = "Linux aarch64" ;;
+            macos:arm64) test "$(uname -sm)" = "Darwin arm64" ;;
             *) exit 1 ;;
           esac
           started_at=$(date -u +%FT%TZ)
-          boot_id=$(cat /proc/sys/kernel/random/boot_id)
-          instance_id=$(cloud-init query instance_id)
+          if [[ "$EXPECTED_OS" == macos ]]; then
+            boot_id=$(sysctl -n kern.bootsessionuuid)
+            instance_id=${RUNNER_NAME#ephemera-}
+          else
+            boot_id=$(cat /proc/sys/kernel/random/boot_id)
+            instance_id=$(cloud-init query instance_id)
+          fi
           [[ "$instance_id" =~ ^[0-9a-f-]{36}$ ]]
           [[ "$RUNNER_NAME" == "ephemera-$instance_id" ]]
           {

@@ -432,8 +432,8 @@ func (r *reconciler) reclaim(ctx context.Context, i vm.Instance) (string, error)
 
 func validateRestored(instances []vm.Instance, template vm.Instance) error {
 	for _, i := range instances {
-		if i.Scope != template.Scope || i.Backend != template.Backend {
-			return fmt.Errorf("instance %s requires its original GitHub scope and VM backend for recovery", i.ID)
+		if i.Scope != template.Scope || i.Backend != template.Backend || i.Namespace != template.Namespace {
+			return fmt.Errorf("instance %s requires its original GitHub scope, VM backend and resource directory for recovery", i.ID)
 		}
 	}
 	return nil

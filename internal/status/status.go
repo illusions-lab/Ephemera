@@ -4,11 +4,14 @@ package status
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -100,4 +103,30 @@ func Read(ctx context.Context, path string) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("daemon status is missing its phase")
 	}
 	return snapshot, nil
+}
+
+// RemoveStale is called while holding the private instance directory lock.
+func RemoveStale(path, root string) error {
+	if filepath.Dir(path) != root {
+		return errors.New("status socket must be directly inside the private instance directory")
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return errors.New("status path exists and is not a Unix socket")
+	}
+	conn, err := net.DialTimeout("unix", path, time.Second)
+	if err == nil {
+		conn.Close()
+		return errors.New("status socket already has an active listener")
+	}
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		return err
+	}
+	return os.Remove(path)
 }

@@ -1,0 +1,140 @@
+package vm
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+func TestTartReadinessRequiresRunnerSignal(t *testing.T) {
+	ready := make(chan struct{})
+	readTartReadiness(strings.NewReader("ready\n"+strings.Repeat("x", 8192)+"2026-11-22 00:00:00Z: Listening for Jobs\n"), ready)
+	select {
+	case <-ready:
+		t.Fatal("accepted guest agent output or a truncated runner line")
+	default:
+	}
+	readTartReadiness(strings.NewReader("2026-11-22 00:00:00Z: Listening for Jobs\n"), ready)
+	select {
+	case <-ready:
+	default:
+		t.Fatal("did not recognize runner listening")
+	}
+}
+
+// This opt-in test provisions a disposable clone with synthetic data.
+func TestTartGuestSmoke(t *testing.T) {
+	home, ref := os.Getenv("EPHEMERA_TART_SMOKE_HOME"), os.Getenv("EPHEMERA_TART_SMOKE_IMAGE")
+	if home == "" || ref == "" {
+		t.Skip("set EPHEMERA_TART_SMOKE_HOME and EPHEMERA_TART_SMOKE_IMAGE on a macOS test host")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Minute)
+	defer cancel()
+	backend, err := NewTart(home, 2, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	image, check, err := backend.ResolveImage(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := check(); err != nil {
+		t.Fatal(err)
+	}
+	id := uuid.NewString()
+	i := Instance{ID: id, Resource: "ephemera-" + id, Backend: "tart", Image: image, Namespace: home}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := backend.Stop(ctx, i); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := backend.Delete(ctx, i); err != nil {
+			t.Error(err)
+		}
+		if err := backend.Stop(ctx, i); err != nil {
+			t.Error(err)
+		}
+		if err := backend.Delete(ctx, i); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := backend.Prepare(ctx, i); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("prepared %s", i.Resource)
+	vmExit, err := backend.startVM(i.Resource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.waitGuestAgent(ctx, i.Resource, vmExit); err != nil {
+		t.Fatal(err)
+	}
+	t.Log("Guest Agent reachable")
+	provision := backend.command(ctx, "exec", i.Resource, "/usr/bin/sudo", "-n", "/bin/sh", "-c", tartProvision)
+	if out, err := provision.CombinedOutput(); err != nil {
+		t.Fatalf("provision runner: %v\n%s", err, out)
+	}
+	smoke := backend.command(ctx, "exec", "-i", i.Resource, "/usr/bin/sudo", "-n", "-u", "ephemera-runner",
+		"/bin/sh", "-c", `IFS= read -r credential && test "$credential" = ephemera-offline-smoke && /usr/bin/id -un && cd /opt/ephemera-runner && ./bin/Runner.Listener --version`)
+	smoke.Stdin = strings.NewReader("ephemera-offline-smoke\n")
+	out, err := smoke.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "ephemera-runner\n") || !strings.Contains(string(out), "2.338.2") {
+		t.Fatal(fmt.Errorf("guest account, stdin or runner verification failed: %v (%s)", err, out))
+	}
+	t.Log("Guest received synthetic data as the non-admin runner account and ran the pinned runner")
+}
+
+func TestTartDeleteChecksIdentityAndRunningState(t *testing.T) {
+	home := t.TempDir()
+	binary := home + "/tart"
+	script := `#!/bin/sh
+case "$1" in
+list)
+  cat "$TART_HOME/state.json"
+  ;;
+delete)
+  printf '[]\n' > "$TART_HOME/state.json"
+  ;;
+*) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	backend := &Tart{home: home, binary: binary}
+	id := uuid.NewString()
+	i := Instance{ID: id, Resource: "ephemera-" + id, Backend: "tart", Namespace: home}
+	writeState := func(running bool) {
+		t.Helper()
+		data := fmt.Sprintf(`[{"Name":"%s","Running":%t}]`, i.Resource, running)
+		if err := os.WriteFile(home+"/state.json", []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeState(true)
+	if err := backend.Delete(t.Context(), i); err == nil {
+		t.Fatal("accepted deletion of a running clone")
+	}
+	writeState(false)
+	foreign := i
+	foreign.Namespace = home + "/elsewhere"
+	if err := backend.Delete(t.Context(), foreign); err == nil {
+		t.Fatal("accepted deletion in a different namespace")
+	}
+	if err := backend.Delete(t.Context(), i); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Delete(t.Context(), i); err != nil {
+		t.Fatal(err)
+	}
+}

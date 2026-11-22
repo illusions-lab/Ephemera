@@ -1,0 +1,18 @@
+version: 1
+github:
+  scope_url: https://github.com/OWNER/REPO
+  scale_set_name: ephemera-macos-test
+  app_id: 0
+  installation_id: 0
+runner:
+  execute: true
+  max_concurrent: 1
+  startup_timeout: 10m
+  idle_timeout: 5m
+vm:
+  backend: tart
+  image: macos
+  arch: arm64
+  image_ref: ghcr.io/cirruslabs/macos-tahoe-base@sha256:65c3133a633fda8753cf1f71f2d55727792d534a2125b0032466563dcc8e58fd
+  vcpus: 2
+  memory_mib: 4096

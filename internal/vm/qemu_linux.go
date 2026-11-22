@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -145,8 +144,6 @@ func (q *qemu) disk(i Instance) string {
 	return qemuplatform.FileOption(filepath.Join(q.directory(i), "disk.qcow2")) + ",format=qcow2,if=virtio"
 }
 
-var listening = regexp.MustCompile(`^\d{4}-\d\d-\d\d \d\d:\d\d:\d\dZ: Listening for Jobs$`)
-
 type readiness struct {
 	ready    chan struct{}
 	line     []byte
@@ -159,7 +156,7 @@ func (r *readiness) Write(data []byte) (int, error) {
 			break
 		}
 		if b == '\n' {
-			if !r.overflow && listening.Match(bytes.TrimSuffix(r.line, []byte("\r"))) {
+			if !r.overflow && runnerReadyLine.Match(bytes.TrimSuffix(r.line, []byte("\r"))) {
 				close(r.ready)
 				r.ready = nil
 			}

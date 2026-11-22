@@ -12,15 +12,34 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/illusions-lab/Ephemera/internal/image"
+	"github.com/illusions-lab/Ephemera/internal/macos"
 	"go.yaml.in/yaml/v3"
 )
 
 const Dir = "/etc/ephemera"
+
+func DefaultDir() string {
+	if runtime.GOOS == "darwin" {
+		return macos.Root()
+	}
+	return Dir
+}
+
+func MacDefaults() Config {
+	cfg := Defaults()
+	cfg.GitHub.ScaleSetName = "ephemera-macos-arm64"
+	cfg.Runner.MaxConcurrent = 1
+	cfg.Runner.StartupTimeout = 10 * time.Minute
+	cfg.VM.Backend, cfg.VM.Image, cfg.VM.Arch = "tart", "macos", "arm64"
+	cfg.VM.ImageRef = macos.ImageRef
+	return cfg
+}
 
 type Config struct {
 	Version int
@@ -40,6 +59,7 @@ type Config struct {
 		Backend   string
 		Image     string
 		Arch      string `yaml:"arch,omitempty"`
+		ImageRef  string `yaml:"image_ref,omitempty"`
 		Profile   string `yaml:"profile,omitempty"`
 		VCPUs     int
 		MemoryMiB int `yaml:"memory_mib"`
@@ -87,6 +107,8 @@ func ValidateScope(value string) error {
 	return nil
 }
 
+var tartImageReference = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9][a-z0-9._/-]*@sha256:[a-f0-9]{64}$`)
+
 func (cfg Config) Validate() error {
 	switch {
 	case cfg.Version != 1:
@@ -99,17 +121,21 @@ func (cfg Config) Validate() error {
 		return errors.New("runner.max_concurrent must be between 1 and 2147483647")
 	case cfg.Runner.StartupTimeout <= 0 || cfg.Runner.IdleTimeout <= 0:
 		return errors.New("runner.startup_timeout and runner.idle_timeout must be positive")
-	case cfg.Runner.Execute && (cfg.VM.Image != "ubuntu" || (cfg.VM.Arch != "amd64" && cfg.VM.Arch != "arm64")):
+	case cfg.VM.Backend == "qemu" && cfg.Runner.Execute && (cfg.VM.Image != "ubuntu" || (cfg.VM.Arch != "amd64" && cfg.VM.Arch != "arm64")):
 		return errors.New("execution requires an Ubuntu amd64 or arm64 guest")
-	case cfg.VM.Backend != "qemu":
-		return errors.New("vm.backend must be qemu")
+	case cfg.VM.Backend != "qemu" && cfg.VM.Backend != "tart":
+		return errors.New("vm.backend must be qemu or tart")
+	case cfg.VM.Backend == "tart" && (cfg.VM.Image != "macos" || cfg.VM.Arch != "arm64" || cfg.VM.Profile != "" || !tartImageReference.MatchString(cfg.VM.ImageRef)):
+		return errors.New("tart requires vm.image macos, vm.arch arm64 and an OCI vm.image_ref pinned by SHA-256 digest")
+	case cfg.VM.Backend == "qemu" && cfg.VM.ImageRef != "":
+		return errors.New("vm.image_ref is only supported by tart")
 	case strings.TrimSpace(cfg.VM.Image) == "" || cfg.VM.VCPUs <= 0 || cfg.VM.MemoryMiB <= 0:
 		return errors.New("vm.image is required and vm.vcpus and vm.memory_mib must be positive")
 	}
 	if err := ValidateScope(cfg.GitHub.ScopeURL); err != nil {
 		return fmt.Errorf("github.scope_url: %w", err)
 	}
-	if cfg.VM.Arch != "" || cfg.VM.Image == "ubuntu" || cfg.VM.Image == "windows" || len(cfg.ImageSources) > 0 {
+	if cfg.VM.Backend == "qemu" && (cfg.VM.Arch != "" || cfg.VM.Image == "ubuntu" || cfg.VM.Image == "windows" || len(cfg.ImageSources) > 0) {
 		if err := (image.Platform{Tag: cfg.VM.Image, Arch: cfg.VM.Arch}).Validate(); err != nil {
 			return fmt.Errorf("vm.image / vm.arch: %w", err)
 		}
@@ -213,6 +239,9 @@ func Defaults() Config {
 }
 
 func (cfg Config) ImageConfig() (image.Config, error) {
+	if cfg.VM.Backend == "tart" {
+		return image.Config{}, errors.New("Tart images are prepared by the Tart backend")
+	}
 	platform := image.Platform{Tag: cfg.VM.Image, Arch: cfg.VM.Arch}
 	if cfg.VM.Arch == "" {
 		return image.Config{}, errors.New("configure vm.image and vm.arch before starting managed image preparation")
