@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -14,11 +15,12 @@ import (
 
 	"charm.land/huh/v2"
 	"github.com/charmbracelet/x/term"
+	"github.com/illusions-lab/Ephemera/internal/backend"
 	"github.com/illusions-lab/Ephemera/internal/cli/setup"
 	"github.com/illusions-lab/Ephemera/internal/config"
+	"github.com/illusions-lab/Ephemera/internal/host"
 	"github.com/illusions-lab/Ephemera/internal/macos"
 	"github.com/illusions-lab/Ephemera/internal/orders"
-	"github.com/illusions-lab/Ephemera/internal/vm"
 	"go.yaml.in/yaml/v3"
 	"golang.org/x/sys/unix"
 )
@@ -148,22 +150,9 @@ func prepareMacActivation(ctx context.Context, release string, automatic, resume
 			return nil, err
 		}
 	}
-	if err := os.MkdirAll(macos.StateDir(), 0700); err != nil {
-		return nil, err
-	}
-	tart, err := vm.NewTart(filepath.Join(macos.StateDir(), "tart"), cfg.VM.VCPUs, cfg.VM.MemoryMiB)
-	if err != nil {
-		return nil, err
-	}
-	if err := tart.Check(ctx); err != nil {
-		return nil, err
-	}
-	_, check, err := tart.ResolveImage(ctx, cfg.VM.ImageRef)
-	if err != nil {
-		return nil, err
-	}
-	if err := check(); err != nil {
-		return nil, err
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if _, err := backend.PrepareImage(ctx, cfg, host.StateDir(), host.ImageCache(), logger, os.Stdout); err != nil {
+		return nil, fmt.Errorf("prepare runner image: %w", err)
 	}
 	if server && !automatic {
 		if err := runMacCommand(ctx, serverTool, "--apply"); err != nil {

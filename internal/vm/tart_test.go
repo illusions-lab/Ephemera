@@ -42,7 +42,7 @@ func TestTartGuestSmoke(t *testing.T) {
 	if err := backend.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
-	image, check, err := backend.ResolveImage(ctx, ref)
+	image, check, err := backend.ResolveImage(ctx, ref, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

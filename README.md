@@ -371,6 +371,14 @@ cannot access an appliance kernel as the service account, prepare the
 configured image as an administrator before starting the service and make
 the cache accessible to `ephemera`.
 
+After pull request CI passes, record the tested head commit and use bundles
+built from that commit for all three live acceptance runs. Record the
+candidate commit, daemon version, dedicated Scale Set label, and workflow
+run for each host. Test Linux amd64 and arm64 with `guest_os=linux` and the
+matching `arch`. Follow the [macOS acceptance steps](packaging/macos/README.md)
+on macOS arm64 using `guest_os=macos`. Wait for all three results before
+merging the candidate. Production publishing runs in GitHub Actions.
+
 Use the [manual acceptance workflow](.github/workflows/execution-acceptance.yml)
 with the dedicated Scale Set label. Use `ephe status --watch` to observe
 launch, readiness, execution, and cleanup.
@@ -381,8 +389,10 @@ launch, readiness, execution, and cleanup.
    and restore the failing dependency. Verify retry and eventual cleanup.
 3. Restart the daemon while a job is active to exercise the shutdown drain.
    Repeat with an abrupt termination of the daemon on the disposable host.
-   Verify that intake pauses during recovery, leftover resources are removed,
-   and a subsequent job completes.
+   Verify the phase order in the daemon logs: `Recovering`, `PreparingImage`,
+   `Connecting`, then `Healthy`. Confirm recovery removes leftover resources
+   before image preparation, intake stays closed until the initial GitHub
+   statistics arrive, and a subsequent job completes.
 4. Inject a transient cleanup failure and restore access. Verify that the
    instance stays in pending cleanup, occupies a slot, and is retried.
 5. After each case, compare the base disk SHA-256 with the verified cache
@@ -479,7 +489,8 @@ GitHub Actions runs the standard checks and Ubuntu installation, update, and
 rollback tests before releasing. The release job verifies the draft bundle
 before publication and checks the public downloads and latest release afterward.
 
-The separate **Ubuntu VM acceptance** workflow builds and boots the runner
-image and checks daemon readiness under systemd with a local GitHub API
-fixture. It runs when relevant files change and can also be started manually
-from the Actions tab.
+The **Ubuntu VM acceptance** workflow builds and boots the runner image on
+amd64 and arm64 and checks daemon readiness under systemd with a local
+GitHub API fixture. Pull request CI runs both architectures and the native
+Apple Silicon installer and archive tests. Ubuntu VM acceptance can also
+be started manually from the Actions tab.

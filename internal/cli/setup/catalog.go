@@ -12,7 +12,9 @@ import (
 	"syscall"
 
 	"charm.land/huh/v2"
+	"github.com/illusions-lab/Ephemera/internal/backend"
 	"github.com/illusions-lab/Ephemera/internal/config"
+	"github.com/illusions-lab/Ephemera/internal/host"
 	"github.com/illusions-lab/Ephemera/internal/image"
 	"go.yaml.in/yaml/v3"
 )
@@ -93,18 +95,14 @@ func prepareFromCatalog(path string) error {
 	if err != nil || !ok {
 		return err
 	}
-	imageCfg, err := selected.ImageConfig()
-	if err != nil {
-		return err
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	prepared, err := image.Prepare(ctx, image.DefaultCache, imageCfg, logger)
+	prepared, err := backend.PrepareImage(ctx, selected, host.StateDir(), host.ImageCache(), logger, os.Stdout)
 	stop()
 	if err != nil {
 		return err
 	}
-	fmt.Println("Prepared image:", prepared.Path)
+	fmt.Println("Prepared image:", prepared)
 	if !hasConfig || (cfg.VM == selected.VM &&
 		cfg.ImageSources[cfg.VM.Image][cfg.VM.Arch] == selected.ImageSources[selected.VM.Image][selected.VM.Arch]) {
 		return nil

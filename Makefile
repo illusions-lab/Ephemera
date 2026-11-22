@@ -47,7 +47,7 @@ bundle-macos:
 	mkdir -p bin/macos-bundle
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o bin/macos-bundle/ephemera ./cmd/ephemera
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o bin/macos-bundle/ephemerad ./cmd/ephemerad
-	cp packaging/macos/activate-macos.sh packaging/macos/server-config.sh scripts/install-macos.sh bin/macos-bundle/
+	cp internal/macos/tart-manifest.tsv packaging/macos/server-config.sh scripts/install-macos.sh bin/macos-bundle/
 
 fmt:
 	go fmt ./...

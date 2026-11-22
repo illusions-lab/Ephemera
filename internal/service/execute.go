@@ -13,8 +13,6 @@ import (
 	"github.com/illusions-lab/Ephemera/internal/vm"
 )
 
-const DefaultStateDir = "/var/lib/ephemera/instances"
-
 type listenFunc func(context.Context, orders.Config, *slog.Logger, func(context.Context, orders.Update) error) error
 
 func execute(ctx context.Context, cfg config.Config, github orders.Config, namespace string, store instanceStore,

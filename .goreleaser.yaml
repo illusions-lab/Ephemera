@@ -44,8 +44,8 @@ archives:
     name_template: 'ephemera_{{ .Os }}_{{ .Arch }}'
     formats: [tar.gz]
     files:
-      - src: packaging/macos/activate-macos.sh
-        dst: activate-macos.sh
+      - src: internal/macos/tart-manifest.tsv
+        dst: tart-manifest.tsv
       - src: packaging/macos/server-config.sh
         dst: server-config.sh
       - src: scripts/install-macos.sh

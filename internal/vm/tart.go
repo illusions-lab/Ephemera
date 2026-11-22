@@ -19,8 +19,6 @@ import (
 	"github.com/illusions-lab/Ephemera/internal/macos"
 )
 
-const tartVersion = macos.TartVersion
-
 var tartName = regexp.MustCompile(`^ephemera-[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$`)
 
 type Tart struct {
@@ -32,16 +30,48 @@ func NewTart(home string, cpu, memory int) (*Tart, error) {
 	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" || os.Geteuid() == 0 {
 		return nil, errors.New("Tart requires Apple Silicon macOS and a non-root service account")
 	}
-	binary := filepath.Join(macos.Root(), "tools", "tart.app", "Contents", "MacOS", "tart")
-	if _, err := os.Stat(binary); errors.Is(err, os.ErrNotExist) {
-		binary, err = exec.LookPath("tart")
-		if err != nil {
-			return nil, err
-		}
-	} else if err != nil {
+	binary, err := findTart()
+	if err != nil {
 		return nil, err
 	}
 	return &Tart{binary: binary, home: home, cpu: cpu, memory: memory}, nil
+}
+
+func findTart() (string, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		return "", err
+	}
+	releases := filepath.Join(macos.Root(), "releases")
+	resolved, err := filepath.EvalSymlinks(releases)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	dir := filepath.Dir(executable)
+	if filepath.Dir(dir) == resolved {
+		path := filepath.Join(dir, "tart")
+		target, err := os.Readlink(path)
+		if err != nil {
+			return "", fmt.Errorf("read release Tart binding: %w", err)
+		}
+		if target != macos.TartBinary() && target != macos.BundledTartBinary() {
+			return "", fmt.Errorf("release Tart binding does not match the embedded Tart %s manifest", macos.TartVersion)
+		}
+		return target, nil
+	}
+
+	for _, binary := range []string{macos.TartBinary(), macos.PrebuiltTartBinary()} {
+		if _, err := os.Stat(binary); err == nil {
+			return binary, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+	}
+	return exec.LookPath("tart")
 }
 
 func (t *Tart) command(ctx context.Context, args ...string) *exec.Cmd {
@@ -69,8 +99,8 @@ func (t *Tart) CheckInstalled(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read Tart version: %w", err)
 	}
-	if strings.TrimSpace(string(out)) != tartVersion {
-		return fmt.Errorf("Tart %s is required", tartVersion)
+	if strings.TrimSpace(string(out)) != macos.TartVersion {
+		return fmt.Errorf("Tart %s is required", macos.TartVersion)
 	}
 	return nil
 }
@@ -93,26 +123,37 @@ func (t *Tart) list(ctx context.Context, source string) ([]tartVM, error) {
 	return entries, nil
 }
 
-func (t *Tart) ResolveImage(ctx context.Context, ref string) (string, func() error, error) {
+func (t *Tart) ResolveImage(ctx context.Context, ref string, progress io.Writer) (string, func() error, error) {
 	pull, cancel := context.WithTimeout(ctx, 45*time.Minute)
 	defer cancel()
-	if err := t.PullImage(pull, ref, nil); err != nil {
+	cmd := t.command(pull, "pull", ref)
+	cmd.Stdout, cmd.Stderr = progress, progress
+	if err := cmd.Run(); err != nil {
 		return "", nil, fmt.Errorf("pull pinned Tart image: %w", err)
 	}
-	return ref, func() error {
-		check, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		entries, err := t.list(check, "oci")
-		if err != nil {
-			return err
+	return ref, func() error { return t.CheckImage(ctx, ref) }, nil
+}
+
+func (t *Tart) CheckImage(ctx context.Context, ref string) error {
+	info, err := os.Lstat(t.home)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0700 {
+		return errors.New("TART_HOME must be a private directory (0700)")
+	}
+	check, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	entries, err := t.list(check, "oci")
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name == ref {
+			return nil
 		}
-		for _, entry := range entries {
-			if entry.Name == ref {
-				return nil
-			}
-		}
-		return errors.New("pinned Tart image is missing from the private OCI cache")
-	}, nil
+	}
+	return errors.New("pinned Tart image is missing from the private OCI cache")
 }
 
 func (t *Tart) owns(i Instance) error {
@@ -285,11 +326,4 @@ func (t *Tart) Delete(ctx context.Context, i Instance) error {
 		return nil
 	}
 	return errors.Join(deleteErr, err, errors.New("Tart clone still present or could not be checked"))
-}
-
-// PullImage keeps setup progress visible without exposing runner credentials.
-func (t *Tart) PullImage(ctx context.Context, ref string, progress io.Writer) error {
-	cmd := t.command(ctx, "pull", ref)
-	cmd.Stdout, cmd.Stderr = progress, progress
-	return cmd.Run()
 }

@@ -16,13 +16,13 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/illusions-lab/Ephemera/internal/backend"
 	"github.com/illusions-lab/Ephemera/internal/config"
-	"github.com/illusions-lab/Ephemera/internal/image"
+	"github.com/illusions-lab/Ephemera/internal/host"
 	"github.com/illusions-lab/Ephemera/internal/macos"
 	"github.com/illusions-lab/Ephemera/internal/orders"
 	"github.com/illusions-lab/Ephemera/internal/qemuplatform"
 	"github.com/illusions-lab/Ephemera/internal/status"
-	"github.com/illusions-lab/Ephemera/internal/vm"
 	"golang.org/x/sys/unix"
 )
 
@@ -34,7 +34,7 @@ type doctorChecks struct {
 	loadConfig    func(string) (config.Config, error)
 	readKey       func(string) ([]byte, error)
 	probeScaleSet func(context.Context, orders.Config) (bool, error)
-	checkImage    func(context.Context, string, image.Config) (image.Image, error)
+	checkImage    func(context.Context, config.Config, string, string) (string, error)
 	hostArch      string
 	lookPath      func(string) (string, error)
 	checkKVM      func() error
@@ -43,9 +43,9 @@ type doctorChecks struct {
 
 func runDoctor(args []string) error {
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	path := flags.String("config", filepath.Join(config.DefaultDir(), "config.yaml"), "configuration file")
-	keyPath := flags.String("github-app-key", filepath.Join(config.DefaultDir(), "credentials", "github-app.pem"), "GitHub App PEM file")
-	cacheDir := flags.String("image-cache", image.DefaultCache, "runner image cache directory")
+	path := flags.String("config", host.ConfigPath(), "configuration file")
+	keyPath := flags.String("github-app-key", host.KeyPath(), "GitHub App PEM file")
+	cacheDir := flags.String("image-cache", host.ImageCache(), "runner image cache directory")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -63,7 +63,7 @@ func runDoctor(args []string) error {
 	}
 	return diagnose(ctx, os.Stdout, doctorPaths{config: *path, key: *keyPath, cache: *cacheDir}, doctorChecks{
 		loadConfig: config.Load, readKey: config.ReadKey, probeScaleSet: orders.ProbeScaleSet,
-		checkImage: image.CheckCached, hostArch: linuxHostArch(),
+		checkImage: backend.CheckImage, hostArch: linuxHostArch(),
 		lookPath: exec.LookPath, checkKVM: checkKVM, diskSpace: availableDisk,
 	})
 }
@@ -126,16 +126,12 @@ func diagnose(ctx context.Context, output io.Writer, paths doctorPaths, checks d
 	if configErr != nil {
 		report("SKIP", "Runner image cache", "A valid configuration is required.")
 	} else {
-		imageCfg, err := cfg.ImageConfig()
-		var cached image.Image
-		if err == nil {
-			cacheCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-			cached, err = checks.checkImage(cacheCtx, paths.cache, imageCfg)
-			cancel()
-		}
+		cacheCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		cached, err := checks.checkImage(cacheCtx, cfg, host.StateDir(), paths.cache)
+		cancel()
 		switch {
 		case err == nil:
-			report("OK", "Runner image cache", cached.Path)
+			report("OK", "Runner image cache", cached)
 		case errors.Is(err, os.ErrPermission):
 			report("FAIL", "Runner image cache", "Cannot read the image cache. Run sudo ephe doctor.")
 		default:
@@ -232,20 +228,17 @@ func diagnoseMac(ctx context.Context, configPath, keyPath string) error {
 		return fmt.Errorf("read GitHub App key: %w", err)
 	}
 	fmt.Println("Configuration and GitHub App key are readable.")
-	backend, err := vm.NewTart(filepath.Join(macos.StateDir(), "tart"), cfg.VM.VCPUs, cfg.VM.MemoryMiB)
+	ref, err := backend.CheckImage(ctx, cfg, host.StateDir(), host.ImageCache())
 	if err != nil {
-		return err
+		return fmt.Errorf("check runner image cache: %w", err)
 	}
-	if err := backend.CheckInstalled(ctx); err != nil {
-		return err
-	}
-	fmt.Printf("Tart %s is available.\n", macos.TartVersion)
+	fmt.Printf("Tart %s image cache contains %s.\n", macos.TartVersion, ref)
 	free, path, err := availableDisk(macos.Root())
 	if err != nil {
 		return err
 	}
 	fmt.Printf("%.1f GiB available on %s.\n", float64(free)/(1<<30), path)
-	current, err := status.Read(ctx, macos.Socket())
+	current, err := status.Read(ctx, host.StatusSocket())
 	if err != nil {
 		return fmt.Errorf("read LaunchAgent status: %w", err)
 	}

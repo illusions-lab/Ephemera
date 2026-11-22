@@ -2,26 +2,6 @@ name: Ubuntu VM acceptance
 on:
   workflow_dispatch:
   workflow_call:
-  pull_request:
-    paths:
-      - '.github/workflows/ubuntu-vm.yml'
-      - 'cmd/**'
-      - 'internal/image/**'
-      - 'internal/service/**'
-      - 'internal/vm/**'
-      - 'internal/qemuplatform/**'
-      - 'internal/status/**'
-      - 'internal/orders/**'
-      - 'internal/cli/**'
-      - 'internal/config/**'
-      - 'go.mod'
-      - 'go.sum'
-      - '.goreleaser.yaml'
-      - 'packaging/ephemera.service'
-      - 'configs/ephemera.example.yaml'
-      - 'scripts/install.sh'
-      - 'scripts/ci-release-test.sh'
-      - 'scripts/ci-github.py'
 permissions:
   contents: read
 jobs:

@@ -3,71 +3,58 @@ set -euo pipefail
 
 die() { printf 'install-macos: %s\n' "$*" >&2; exit 1; }
 root="$HOME/Library/Application Support/Ephemera"
-label=com.illusions-lab.ephemera
-domain="gui/$(id -u)"
-plist="$HOME/Library/LaunchAgents/$label.plist"
-journal="$root/.install-transaction"
 releases=https://github.com/illusions-lab/Ephemera/releases
 fetch=(/usr/bin/curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --retry 2)
+bundle_files=(ephemera ephemerad server-config.sh tart-manifest.tsv)
 
-fetch_tart() {
-  local tart="$root/tools/tart.app/Contents/MacOS/tart"
-  if [[ -x "$tart" && "$("$tart" --version)" == 2.42.0 ]]; then return; fi
-  [[ -z "$bundle" ]] || die 'offline bundle requires Tart 2.42.0 under Ephemera/tools/tart.app'
-  [[ ! -e "$root/tools/tart.app" ]] || die 'move the existing Tart.app aside before installing the pinned version'
-  "${fetch[@]}" -o "$work/tart.tar.gz" https://github.com/openai/tart/releases/download/2.42.0/tart.tar.gz
-  (cd "$work" && printf '%s  %s\n' a95dda214b5f676298430d665a8174992e6b300dd20c653385b60481ae819ddf tart.tar.gz | /usr/bin/shasum -a 256 -c -)
-  tar -xzf "$work/tart.tar.gz" -C "$work"
-  [[ "$("$work/tart.app/Contents/MacOS/tart" --version)" == 2.42.0 ]] || die 'unexpected Tart version'
-  mkdir -p "$root/tools"
-  mv "$work/tart.app" "$root/tools/tart.app"
-}
-
-set_current() {
-  rm -f "$work/current"
-  ln -s "$1" "$work/current"
-  /bin/mv -fh "$work/current" "$root/current"
-}
-
-rollback_install() {
-  local previous
-  previous=$(cat "$work/previous") || return 1
-  if launchctl print "$domain/$label" >/dev/null 2>&1; then
-    launchctl bootout "$domain/$label" || return 1
+stage_tart() {
+  local manifest=$1 online=$2 tart_version tart_url tart_digest extra entry tools relative
+  IFS=$'\t' read -r tart_version tart_url tart_digest extra < "$manifest"
+  [[ "$tart_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ &&
+     "$tart_url" == https://* && "$tart_digest" =~ ^[a-f0-9]{64}$ && -z "$extra" ]] ||
+    die 'invalid Tart manifest'
+  entry="$tart_version-$tart_digest"
+  tools="$root/tools/tart"
+  relative=tart.app/Contents/MacOS/tart
+  if ! "$online" && [[ ! -d "$tools/$entry" ]]; then
+    tools="$root/tools/tart-prebuilt"
   fi
-  if [[ -n "$previous" ]]; then set_current "$previous" || return 1
-  else rm -f "$root/current" || return 1; fi
-  if [[ -f "$work/previous.plist" ]]; then cp "$work/previous.plist" "$plist" || return 1
-  else rm -f "$plist" || return 1; fi
-  if [[ -f "$work/was-running" ]]; then launchctl bootstrap "$domain" "$plist" || return 1; fi
-  return 0
-}
-
-finish_install() {
-  local result=$?
-  if [[ -f "$journal" ]]; then
-    if ! rollback_install; then
-      printf 'install-macos: could not restore the previous installation; recovery files remain in %s\n' "$work" >&2
-      return 1
+  if [[ ! -d "$tools/$entry" ]]; then
+    mkdir -p "$work/dependency/$entry" "$tools"
+    if "$online"; then
+      "${fetch[@]}" -o "$work/tart.tar.gz" "$tart_url"
+      (cd "$work" && printf '%s  %s\n' "$tart_digest" tart.tar.gz | /usr/bin/shasum -a 256 -c -)
+      tar -xzf "$work/tart.tar.gz" -C "$work/dependency/$entry"
+    else
+      [[ -x "$root/tools/$relative" && "$("$root/tools/$relative" --version)" == "$tart_version" ]] ||
+        die "offline bundle requires Tart $tart_version at $root/tools/tart.app"
+      /usr/bin/ditto "$root/tools/tart.app" "$work/dependency/$entry/tart.app"
     fi
-    rm -f "$journal"
+    [[ "$("$work/dependency/$entry/$relative" --version)" == "$tart_version" ]] ||
+      die "staged Tart does not match version $tart_version"
+    # Move into the parent so simultaneous installers cannot nest one copy in another.
+    /bin/mv -n "$work/dependency/$entry" "$tools/"
   fi
-  rm -rf "$work"
-  return "$result"
+  tart="$tools/$entry/$relative"
+  [[ -x "$tart" && "$("$tart" --version)" == "$tart_version" ]] ||
+    die "installed Tart at $tart does not match $tart_version"
 }
 
-ensure_cli_links() {
-  local name
+install_cli_links() {
+  local name path target="$root/current/ephemera"
   for name in ephemera ephe; do
-    if [[ ! -L "$HOME/.local/bin/$name" ]]; then
-      ln -s "$root/current/ephemera" "$HOME/.local/bin/$name"
+    path="$HOME/.local/bin/$name"
+    [[ "$(readlink "$path" || true)" == "$target" ]] && continue
+    if [[ ! -e "$path" && ! -L "$path" ]]; then
+      /bin/ln -sh "$target" "$path" || true
     fi
+    [[ "$(readlink "$path" || true)" == "$target" ]] || die "Ephemera is active but could not create $path"
   done
 }
 
 install_mac() {
-  version='' bundle='' config='' key=''
-  local automatic=false existing_app=false app_name='' previous target identity digest archive name snapshot
+  local version='' bundle='' config='' key='' app_name='' online=false
+  local automatic=false existing_app=false target identity digest archive name tart entry path
   while (($#)); do
     case "$1" in
       --version|--bundle|--config|--github-app-key|--app-name)
@@ -91,20 +78,8 @@ install_mac() {
     [[ -z "$config$key" ]] || die 'input files require --non-interactive'
     [[ "$existing_app" == false || -z "$app_name" ]] || die 'choose either --existing-app or --app-name'
   fi
-  launchctl print "$domain" >/dev/null 2>&1 || die 'log in to the macOS desktop with this account first'
-  if launchctl print "$domain/$label.dev" >/dev/null 2>&1; then
-    die 'stop the development LaunchAgent before installing Ephemera'
-  fi
-  if [[ -f "$journal" ]]; then
-    work=$(cat "$journal")
-    [[ "$work" == "$root"/.install.?????? && -d "$work" ]] || die 'invalid installation recovery record'
-    rollback_install || die "could not restore the previous installation from $work"
-    rm -f "$journal"
-    rm -rf "$work"
-    printf 'Recovered the previous installation.\n'
-  fi
   work=$(mktemp -d "$root/.install.XXXXXX")
-  trap finish_install EXIT
+  trap 'rm -rf "$work"' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
@@ -121,61 +96,60 @@ install_mac() {
     [[ "$digest" =~ ^[[:xdigit:]]{64}$ ]] || die "$version has no verified macOS arm64 bundle"
     "${fetch[@]}" -o "$work/$archive" "$releases/download/$version/$archive"
     (cd "$work" && printf '%s  %s\n' "$digest" "$archive" | /usr/bin/shasum -a 256 -c -)
-    mkdir "$work/bundle"
-    for name in ephemera ephemerad activate-macos.sh server-config.sh; do
-      tar -xOzf "$work/$archive" "$name" > "$work/bundle/$name"
-    done
     bundle="$work/bundle"
-    # Online installation can fetch the pinned Tart distribution.
+    mkdir "$bundle"
+    for name in "${bundle_files[@]}"; do
+      tar -xOzf "$work/$archive" "$name" > "$bundle/$name"
+    done
     online=true
-  else
-    online=false
   fi
+
   mkdir "$work/candidate"
-  for name in ephemera ephemerad activate-macos.sh server-config.sh; do
+  for name in "${bundle_files[@]}"; do
     [[ -s "$bundle/$name" ]] || die "missing $name"
     install -m 0700 "$bundle/$name" "$work/candidate/$name"
   done
   identity=$("$work/candidate/ephemera" version)
-  [[ "$identity" == "$("$work/candidate/ephemerad" --version)" ]] || die 'bundle versions or commits differ'
+  [[ -n "$identity" && "$identity" == "$("$work/candidate/ephemerad" --version)" ]] ||
+    die 'bundle versions or commits differ'
   [[ -z "$version" || "${identity%% *}" == "$version" ]] || die 'bundle version does not match release tag'
-
-  if "$online"; then bundle=''; fi
-  fetch_tart
-  export PATH="$root/tools/tart.app/Contents/MacOS:$PATH"
-  target="$root/releases/$(/usr/bin/shasum -a 256 "$work/candidate/"* | awk '{print $1}' | /usr/bin/shasum -a 256 | cut -c1-32)"
+  "$work/candidate/ephemera" tart-manifest > "$work/cli-manifest"
+  "$work/candidate/ephemerad" --tart-manifest > "$work/daemon-manifest"
+  if ! cmp "$work/candidate/tart-manifest.tsv" "$work/cli-manifest" ||
+     ! cmp "$work/candidate/tart-manifest.tsv" "$work/daemon-manifest"; then
+    die 'Tart manifest does not match the candidate binaries'
+  fi
+  stage_tart "$work/candidate/tart-manifest.tsv" "$online"
+  entry=$({
+    for name in "${bundle_files[@]}"; do
+      /usr/bin/shasum -a 256 "$work/candidate/$name" | cut -d ' ' -f 1
+    done
+    printf '%s\n' "$tart"
+  } | /usr/bin/shasum -a 256 | cut -d ' ' -f 1)
+  ln -s "$tart" "$work/candidate/tart"
+  mv "$work/candidate" "$work/$entry"
   mkdir -p "$root/releases" "$HOME/.local/bin"
-  if [[ ! -d "$target" ]]; then mv "$work/candidate" "$target"; fi
-  previous=$(readlink "$root/current" || true)
+  target="$root/releases/$entry"
+  /bin/mv -n "$work/$entry" "$root/releases/"
+  for name in "${bundle_files[@]}"; do
+    cmp "$bundle/$name" "$target/$name" || die "existing release differs at $target/$name"
+  done
+  [[ "$(readlink "$target/tart")" == "$tart" ]] || die "existing release has a different Tart at $target/tart"
   for name in ephemera ephe; do
-    if [[ -e "$HOME/.local/bin/$name" || -L "$HOME/.local/bin/$name" ]]; then
-      [[ "$(readlink "$HOME/.local/bin/$name")" == "$root/current/ephemera" ]] || die "$name already exists in ~/.local/bin"
+    path="$HOME/.local/bin/$name"
+    if [[ -e "$path" || -L "$path" ]]; then
+      [[ "$(readlink "$path" || true)" == "$root/current/ephemera" ]] || die "$name already exists in ~/.local/bin"
     fi
   done
-  if ! "$automatic" && [[ "$target" == "$previous" && -f "$root/config.yaml" ]] &&
-     launchctl print "$domain/$label" >/dev/null 2>&1; then
-    snapshot=$("$root/current/ephemera" status --json 2>/dev/null || true)
-    if [[ "$snapshot" == *'"github":"connected"'* ]]; then
-      ensure_cli_links
-      printf 'Ephemera is already running.\n'
-      return
-    fi
-  fi
-  if [[ -f "$plist" ]]; then cp "$plist" "$work/previous.plist"; fi
-  if launchctl print "$domain/$label" >/dev/null 2>&1; then touch "$work/was-running"; fi
-  printf '%s\n' "$previous" > "$work/previous"
-  printf '%s\n' "$work" > "$work/journal"
-  mv "$work/journal" "$journal"
-  set_current "$target"
+
   local options=()
   if "$automatic"; then options=(--non-interactive --config "$config" --github-app-key "$key"); fi
   if "$existing_app"; then options=(--existing-app); fi
   if [[ -n "$app_name" ]]; then options=(--app-name "$app_name"); fi
-  if ! "$target/ephemera" setup ${options[@]+"${options[@]}"} || [[ ! -f "$root/config.yaml" ]]; then
-    die 'setup did not finish; restoring the previous installation'
-  fi
-  rm -f "$journal"
-  ensure_cli_links
+  "$target/ephemera" setup ${options[@]+"${options[@]}"}
+  [[ "$(cd "$root/current" 2>/dev/null && pwd -P)" == "$(cd "$target" && pwd -P)" ]] ||
+    die 'setup ended without activating the staged release'
+  install_cli_links
   case ":$PATH:" in
     *":$HOME/.local/bin:"*) ;;
     *) printf 'Add %s to PATH to use ephe.\n' "$HOME/.local/bin" ;;
@@ -190,7 +164,5 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   umask 077
   mkdir -p "$root"
   [[ ! -L "$root" && "$(stat -f '%u:%Lp' "$root")" == "$(id -u):700" ]] || die 'installation needs a private user-owned data directory (0700)'
-  # shellcheck disable=SC2016
-
-  /usr/bin/lockf -k -t 0 "$root/.install.lock" /bin/bash -c 'source "$1"; shift; install_mac "$@"' bash "$0" "$@"
+  install_mac "$@"
 fi

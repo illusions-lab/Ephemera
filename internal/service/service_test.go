@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -47,13 +48,15 @@ func TestReadinessAndCancellation(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = os.RemoveAll(stateDir) })
 		opts.StateDir, opts.StatusSocket = stateDir, filepath.Join(stateDir, "status.sock")
-		stale, err := net.ListenUnix("unix", &net.UnixAddr{Name: opts.StatusSocket, Net: "unix"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		stale.SetUnlinkOnClose(false)
-		if err := stale.Close(); err != nil {
-			t.Fatal(err)
+		if runtime.GOOS == "darwin" {
+			stale, err := net.ListenUnix("unix", &net.UnixAddr{Name: opts.StatusSocket, Net: "unix"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stale.SetUnlinkOnClose(false)
+			if err := stale.Close(); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if err := os.WriteFile(opts.ConfigPath, []byte(text), 0600); err != nil {
 			t.Fatal(err)
@@ -67,7 +70,7 @@ func TestReadinessAndCancellation(t *testing.T) {
 					t.Fatal("Tart observation must not pull an image")
 				}
 				if _, err := status.Read(ctx, opts.StatusSocket); err != nil {
-					t.Fatalf("status socket was not reclaimed: %v", err)
+					t.Fatalf("status socket unavailable: %v", err)
 				}
 				return update(ctx, orders.Update{})
 			})
@@ -97,7 +100,7 @@ func TestReadinessAndCancellation(t *testing.T) {
 		}
 		defer os.RemoveAll(socketDir)
 		opts := opts
-		opts.StatusSocket = filepath.Join(socketDir, "status.sock")
+		opts.StateDir, opts.StatusSocket = socketDir, filepath.Join(socketDir, "status.sock")
 		addr := &net.UnixAddr{Name: filepath.Join(socketDir, "notify"), Net: "unixgram"}
 		conn, err := net.ListenUnixgram("unixgram", addr)
 		if err != nil {

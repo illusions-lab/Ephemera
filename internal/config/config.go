@@ -17,19 +17,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/illusions-lab/Ephemera/internal/host"
 	"github.com/illusions-lab/Ephemera/internal/image"
 	"github.com/illusions-lab/Ephemera/internal/macos"
 	"go.yaml.in/yaml/v3"
 )
 
-const Dir = "/etc/ephemera"
-
-func DefaultDir() string {
-	if runtime.GOOS == "darwin" {
-		return macos.Root()
-	}
-	return Dir
-}
+const Dir = host.LinuxConfigDir
 
 func MacDefaults() Config {
 	cfg := Defaults()

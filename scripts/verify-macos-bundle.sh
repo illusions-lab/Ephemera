@@ -12,7 +12,7 @@ digest=$(awk -v archive="$archive" '$2 == archive || $2 == "*" archive {print $1
 (cd "$assets" && printf '%s  %s\n' "$digest" "$archive" | /usr/bin/shasum -a 256 -c -)
 tar -xzf "$assets/$archive" -C "$work"
 cmp "$installer" "$work/install-macos.sh"
-for script in install-macos.sh activate-macos.sh server-config.sh; do
+for script in install-macos.sh server-config.sh; do
   test -s "$work/$script"
   bash -n "$work/$script"
 done
@@ -22,3 +22,7 @@ done
 actual=$("$work/ephemera" version)
 [[ -n "$actual" && "$actual" == "$("$work/ephemerad" --version)" ]]
 [[ -z "$expected" || "$actual" == "$expected" ]]
+"$work/ephemera" tart-manifest > "$work/cli-manifest"
+"$work/ephemerad" --tart-manifest > "$work/daemon-manifest"
+cmp "$work/tart-manifest.tsv" "$work/cli-manifest"
+cmp "$work/tart-manifest.tsv" "$work/daemon-manifest"

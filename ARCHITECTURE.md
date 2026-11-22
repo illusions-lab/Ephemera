@@ -54,35 +54,49 @@ prepared at daemon startup.
 `ephe config validate` and `ephe image prepare` expose the same validation
 and image preparation for scripted use.
 
-On Apple Silicon, `install-macos.sh` selects a version under the logged-in
-user's `~/Library/Application Support/Ephemera` and delegates GitHub and
-image setup to `ephe setup`. The user LaunchAgent starts the same daemon.
-The user directory holds the private GitHub App key, Tart cache, state,
-and status socket. The daemon takes the state lock before reclaiming a
-stale status socket, including in observation mode.
+On Apple Silicon, `install-macos.sh` verifies and stages the release, then
+runs the staged `ephemera setup`. Both the installer and direct setup take
+the same activation lock and recover any previous interrupted switch.
+Setup verifies the GitHub App, validates the configuration, and prepares
+the image before stopping the previous agent. A private per-activation
+directory supplies the YAML and PEM used by the LaunchAgent.
+
+The transaction records the previous plist, `current` target, and loaded
+state before switching the agent. The candidate plist runs the release's
+absolute daemon path. Setup commits `current` after the candidate reports
+`Healthy` with the activation ID, GitHub target, and intake mode. Bootstrap
+failure, cancellation, and timeout restore the previous service. An
+interrupted rollback leaves the recovery journal available to the next setup.
+
+Each Darwin archive includes the Tart manifest embedded in both binaries.
+The installer keeps verified downloads by version and digest. Release
+directories bind their Tart binary so the restored agent uses its own
+dependency. The power profile is managed independently by
+`server-config.sh`.
 
 ## Daemon lifecycle
 
-1. Load and validate the saved configuration. Read the GitHub App private
-   key through systemd's credential mechanism on Linux or from the private
-   user directory on macOS.
-2. In execution mode, lock the instance directory and check the QEMU
-   backend. Verify the configured image in the cache or assemble and
-   boot-test it. The configuration identifies the platform by a stable tag such as
-   `ubuntu` and a separate architecture such as `amd64`. Source versions
-   and checksums identify the actual build. The image cache lives under
-   `/var/lib/ephemera/image/`.
-3. In execution mode, recover leftover instances before opening a Scale
-   Set session.
-4. Open the session and read its initial statistics, then report `Healthy`
-   and notify systemd with `READY=1`. Observation advertises zero capacity.
-   Execution advertises capacity for new VM slots and available runners.
+1. Load the configuration. In execution mode, lock the instance directory
+   and enter `Recovering`. The daemon checks persisted instance identities
+   against the backend, resource directory, and GitHub scope and Scale Set.
+   It stops old VMs, removes their local resources and GitHub registrations,
+   and deletes each record only after all cleanup steps succeed. Failed
+   cleanup is retried with backoff while intake is closed.
+2. Enter `PreparingImage`. Check the backend and prepare and validate the
+   configured runner image. A failure in this stage reports
+   `Degraded during PreparingImage`. Linux images are keyed by platform and
+   architecture, with source versions and checksums identifying the build.
+3. Enter `Connecting` and open the GitHub Scale Set session. After GitHub
+   returns initial statistics, report `Healthy`, notify systemd with
+   `READY=1`, and open execution capacity. Observation skips instance
+   recovery and continues to advertise zero capacity.
 
-The service publishes startup phases and the latest GitHub demand at
-`/run/ephemera/status.sock`. `ephe status` reads the snapshot and uses
-systemd for the service state or the last reported failure phase. A daemon
-snapshot includes a timestamp for the latest demand and omits demand until
-the first GitHub update. The socket exposes only a read endpoint.
+The host layer owns configuration, credential, cache and state defaults,
+service status, and socket lifecycle. On macOS the daemon takes the state
+lock before checking for and reclaiming a stale socket, including in
+observation mode. On Linux the packaged systemd unit supplies the socket at
+`/run/ephemera/status.sock`. The read-only socket reports startup phases
+and the latest GitHub demand after the first statistics update.
 
 ## Runner execution design
 
@@ -162,7 +176,10 @@ Place bootstrap artifacts in private per-instance storage and expose only
 what the guest needs. Guest networking must reach GitHub and respect the
 host's isolation policy. Tart Linux arm64 and additional QEMU guests can use
 the same lifecycle once their images and bootstrap paths are verified.
-The development LaunchAgent and Linux systemd unit supervise the same daemon. Public Darwin packaging is planned.
+Backend selection centralizes host and guest compatibility and image operations.
+The daemon, setup, and `ephe image prepare` share preparation logic.
+`ephe doctor` checks availability without pulling or rebuilding images.
+The reconciler works through the existing `vm.Backend` interface.
 
 [Tart VM management](https://tart.run/quick-start/) · [Tart Guest Agent](https://tart.run/blog/2025/06/01/bridging-the-gaps-with-the-tart-guest-agent/)
 

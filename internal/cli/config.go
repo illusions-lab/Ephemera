@@ -3,14 +3,14 @@ package cli
 import (
 	"errors"
 	"flag"
-	"path/filepath"
 
 	"github.com/illusions-lab/Ephemera/internal/config"
+	"github.com/illusions-lab/Ephemera/internal/host"
 )
 
 func validateConfig(args []string) error {
 	flags := flag.NewFlagSet("config validate", flag.ContinueOnError)
-	path := flags.String("config", filepath.Join(config.DefaultDir(), "config.yaml"), "configuration file")
+	path := flags.String("config", host.ConfigPath(), "configuration file")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil

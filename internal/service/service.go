@@ -6,12 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
-	"runtime"
 	"sync/atomic"
 
+	"github.com/illusions-lab/Ephemera/internal/backend"
 	"github.com/illusions-lab/Ephemera/internal/config"
-	"github.com/illusions-lab/Ephemera/internal/image"
+	"github.com/illusions-lab/Ephemera/internal/host"
 	"github.com/illusions-lab/Ephemera/internal/orders"
 	"github.com/illusions-lab/Ephemera/internal/status"
 )
@@ -23,10 +22,10 @@ type Options struct {
 }
 
 func Run(ctx context.Context, opts Options, logger *slog.Logger) error {
-	return run(ctx, opts, logger, prepareImage, orders.Listen)
+	return run(ctx, opts, logger, backend.BuildImage, orders.Listen)
 }
 func run(ctx context.Context, opts Options, logger *slog.Logger,
-	prepare func(context.Context, string, image.Config, *slog.Logger) (string, func() error, error),
+	prepare backend.ImageBuilder,
 	listen func(context.Context, orders.Config, *slog.Logger, func(context.Context, orders.Update) error) error,
 ) (result error) {
 	current := status.Snapshot{ActivationID: opts.ActivationID, Phase: "Starting", GitHub: "pending", Intake: "observing"}
@@ -78,22 +77,15 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 	if cfg.Runner.Execute && opts.Claim {
 		return errors.New("runner.execute cannot be combined with --claim")
 	}
-	if cfg.Runner.Execute && runtime.GOOS == "linux" && cfg.VM.Arch != runtime.GOARCH {
-		return fmt.Errorf("execution guest architecture %s must match host architecture %s", cfg.VM.Arch, runtime.GOARCH)
-	}
-	if cfg.VM.Backend == "tart" && opts.Claim {
-		return errors.New("--claim requires the QEMU test path")
-	}
 	root := opts.StateDir
 	if root == "" {
-		root = DefaultStateDir
+		root = host.StateDir()
 	}
 	var store instanceStore
-	usesTartSocket := cfg.VM.Backend == "tart" && opts.StatusSocket != ""
 	if cfg.Runner.Execute {
 		current.Intake = "executing"
 	}
-	if cfg.Runner.Execute || usesTartSocket {
+	if cfg.Runner.Execute || host.PrivateStatusSocket(opts.StatusSocket) {
 		var unlock func()
 		store, unlock, err = openInstances(root)
 		if err != nil {
@@ -101,17 +93,12 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 		}
 		defer unlock()
 	}
-	selected, err := selectBackend(cfg, root, opts.CacheDir, logger, prepare)
+	selected, err := backend.Select(cfg, root, opts.CacheDir, logger, prepare, opts.Claim)
 	if err != nil {
 		return err
 	}
 	if opts.StatusSocket != "" {
-		if usesTartSocket {
-			if err := status.RemoveStale(opts.StatusSocket, string(store)); err != nil {
-				return err
-			}
-		}
-		closeStatus, err := status.Listen(opts.StatusSocket, func() status.Snapshot { return *published.Load() })
+		closeStatus, err := host.ListenStatus(opts.StatusSocket, string(store), func() status.Snapshot { return *published.Load() })
 		if err != nil {
 			return err
 		}
@@ -122,12 +109,7 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 	}
 	keyPath := opts.KeyPath
 	if keyPath == "" {
-		dir := os.Getenv("CREDENTIALS_DIRECTORY")
-		if dir != "" {
-			keyPath = filepath.Join(dir, "github-app-key")
-		} else {
-			keyPath = filepath.Join(config.DefaultDir(), "credentials", "github-app.pem")
-		}
+		keyPath = host.DaemonKeyPath()
 	}
 	key, err := config.ReadKey(keyPath)
 	if err != nil {
@@ -141,12 +123,7 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 		if err := report("PreparingImage"); err != nil {
 			return "", nil, err
 		}
-		if selected.backend != nil {
-			if err := selected.backend.Check(ctx); err != nil {
-				return "", nil, fmt.Errorf("check VM backend: %w", err)
-			}
-		}
-		id, check, err := selected.prepareImage(ctx)
+		id, check, err := selected.PrepareImage(ctx)
 		if err == nil && cfg.Runner.Execute {
 			err = check()
 		}
@@ -178,7 +155,7 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 		if err != nil {
 			return err
 		}
-		return execute(ctx, cfg, orderConfig, selected.namespace, store, selected.backend, runners, logger, listen, prepareCurrent,
+		return execute(ctx, cfg, orderConfig, selected.Namespace, store, selected.VM, runners, logger, listen, prepareCurrent,
 			func(connected, recovering, stopping bool, update orders.Update, counts status.Instances) error {
 				current.Instances = &counts
 				current.GitHub = "disconnected"
@@ -247,11 +224,6 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 		}
 		return nil
 	})
-}
-
-func prepareImage(ctx context.Context, cache string, cfg image.Config, logger *slog.Logger) (string, func() error, error) {
-	prepared, err := image.Prepare(ctx, cache, cfg, logger)
-	return prepared.Path, prepared.Check, err
 }
 
 func snapshotDemand(update orders.Update) *status.Demand {

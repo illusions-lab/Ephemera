@@ -170,7 +170,6 @@ func TestActivationRestoresLoadedAndUnloadedServices(t *testing.T) {
 			ctx := context.Background()
 			first, second := testCandidate("first"), testCandidate("edited")
 			oldRelease, newRelease := filepath.Join(a.root, "version A"), filepath.Join(a.root, "version B")
-			var statusMode string
 			statusModeFile := filepath.Join(a.root, "status-mode")
 			staleIDFile := filepath.Join(a.root, "stale-id")
 			fixtureStatus(t, a, func() status.Snapshot {
@@ -193,9 +192,8 @@ func TestActivationRestoresLoadedAndUnloadedServices(t *testing.T) {
 			}
 			oldPlist := readActivationFile(t, a.plist)
 			oldConfig := readPlist(t, a.plist, "ProgramArguments.3")
-			statusMode = mode
 			writeActivationFile(t, staleIDFile, plistActivationID(a.plist), 0600)
-			writeActivationFile(t, statusModeFile, statusMode, 0600)
+			writeActivationFile(t, statusModeFile, mode, 0600)
 			userConfig := filepath.Join(a.root, "config.yaml")
 			writeActivationFile(t, userConfig, string(second.Config), 0600)
 			loaded := filepath.Join(a.root, "loaded")

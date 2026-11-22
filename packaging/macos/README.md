@@ -1,7 +1,8 @@
 # macOS runner installation and acceptance
 
 Use macOS 26 or newer on Apple Silicon. Run the installer in Terminal as the
-account that will run Ephemera. The installer manages Tart 2.42.0 and stores
+account that will run Ephemera. The installer uses the [bundled Tart manifest](../../internal/macos/tart-manifest.tsv)
+and stores
 the release, GitHub App credentials, VM state, and logs under
 `~/Library/Application Support/Ephemera`. It places `ephe` and `ephemera` in
 `~/.local/bin` and installs `com.illusions-lab.ephemera` in `~/Library/LaunchAgents`.
@@ -29,15 +30,22 @@ one. To enable execution, edit `config.yaml` and run `ephe setup` to apply it.
 Use `ephe doctor`, `ephe status`, and `logs/daemon.log` to inspect the service.
 
 Rerun the installer to upgrade, or pass `--version TAG` to select a specific
-release. If activation fails, it restores the previous binary and LaunchAgent.
-It retains the configuration and private key for retries. Retry an unattended
-installation with the same inputs.
+release. Installation and direct `ephe setup` use the same activation
+transaction. The active LaunchAgent reads the YAML and PEM from its private
+activation snapshot. Editing `config.yaml` takes effect when setup activates
+it. If the candidate fails to become healthy, setup restores the previous
+service and keeps the editable inputs for a retry. If setup is killed during
+the switch, rerun setup or the installer to recover. If recovery fails, use
+the reported journal path when investigating the failure.
 
-For a local build, run `make bundle-macos`, place Tart 2.42.0 at
+For a local build, run `make bundle-macos`, place the version listed in
+`bin/macos-bundle/tart-manifest.tsv` at
 `~/Library/Application Support/Ephemera/tools/tart.app`, and run
 `/bin/bash scripts/install-macos.sh --bundle bin/macos-bundle`. Ensure the
-Ephemera directory has mode `0700`. The bundle skips installer downloads.
-Setup still needs GitHub access and may fetch the configured VM image.
+Ephemera directory has mode `0700`. The installer stages a separate copy
+of the prebuilt dependency, so it remains available after switching the
+prebuilt app for another version. Setup still needs GitHub access and may
+fetch the configured VM image.
 
 ## Development without the installer
 
@@ -45,7 +53,7 @@ Run the daemon as your logged-in macOS user on Apple Silicon. The macOS
 guest uses a separate, non-admin `ephemera-runner` account for jobs. Use a
 dedicated test Scale Set and trusted workflows.
 
-Build with `make build` and put Tart 2.42.0 on your PATH. Create a private
+Build with `make build` and put the manifest version of Tart on your PATH. Create a private
 directory with `mkdir -m 700 "$HOME/Library/Application Support/Ephemera"`. Place a copy of
 `config.dev.yaml` named `config.yaml` and the test GitHub App key named
 `github-app.pem` there. Fill in the GitHub values and set the key mode to
@@ -77,9 +85,10 @@ steps below.
    Verify the recorded runner and boot IDs. Check that the daemon's private
    `TART_HOME` has no local clone and GitHub has no stale runner registration.
 2. Run another job. Use `launchctl kill SIGKILL "gui/$(id -u)/com.illusions-lab.ephemera.dev"`
-   while the job is running. Check that recovery runs before work intake
-   resumes and that clone and registration cleanup succeeds. Dispatch one
-   more job to verify that the restarted daemon resumes work.
+   while the job is running. Check logs for `Recovering`, `PreparingImage`,
+   `Connecting`, and `Healthy` in order. Verify clone and registration
+   cleanup before image preparation. Dispatch another job and verify that
+   the restarted daemon resumes work.
 3. Compare the pinned source image's disk hash before and after the tests.
    Inspect the instance records, daemon logs and process arguments to
    confirm they contain no JIT credential. Keep raw runner output out of the

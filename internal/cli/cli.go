@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"runtime"
 
+	"github.com/illusions-lab/Ephemera/internal/macos"
 	"github.com/illusions-lab/Ephemera/internal/version"
 )
 
@@ -17,6 +18,9 @@ func Run(args []string) error {
 		return nil
 	case len(args) == 1 && args[0] == "version":
 		fmt.Println(version.String())
+		return nil
+	case len(args) == 1 && args[0] == "tart-manifest":
+		fmt.Print(macos.TartManifest())
 		return nil
 	case len(args) >= 1 && args[0] == "update":
 		if runtime.GOOS == "darwin" {

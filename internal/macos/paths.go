@@ -6,7 +6,6 @@ import (
 )
 
 const Label = "com.illusions-lab.ephemera"
-const TartVersion = "2.42.0"
 const ImageRef = "ghcr.io/cirruslabs/macos-tahoe-base@sha256:65c3133a633fda8753cf1f71f2d55727792d534a2125b0032466563dcc8e58fd"
 
 func Root() string {

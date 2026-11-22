@@ -23,8 +23,6 @@ import (
 	"github.com/illusions-lab/Ephemera/internal/qemuplatform"
 )
 
-const DefaultCache = "/var/lib/ephemera/image"
-
 type Config struct {
 	Platform  Platform
 	Source    Source

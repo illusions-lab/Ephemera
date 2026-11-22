@@ -60,7 +60,7 @@ jobs:
       - name: Exercise installation and rollback on Ubuntu
         run: scripts/ci-install-test.sh
   ubuntu-vm:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     uses: ./.github/workflows/ubuntu-vm.yml
 
   macos-install:

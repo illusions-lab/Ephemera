@@ -8,12 +8,9 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"runtime"
 	"syscall"
 
-	"github.com/illusions-lab/Ephemera/internal/config"
-	"github.com/illusions-lab/Ephemera/internal/image"
+	"github.com/illusions-lab/Ephemera/internal/host"
 	"github.com/illusions-lab/Ephemera/internal/macos"
 	"github.com/illusions-lab/Ephemera/internal/service"
 	"github.com/illusions-lab/Ephemera/internal/version"
@@ -30,15 +27,15 @@ func run(args []string) error {
 		fmt.Println(version.String())
 		return nil
 	}
-	flags := flag.NewFlagSet("ephemerad", flag.ContinueOnError)
-	path := flags.String("config", filepath.Join(config.DefaultDir(), "config.yaml"), "configuration file")
-	cacheDir := flags.String("image-cache", image.DefaultCache, "image cache directory")
-	defaultState, defaultSocket := service.DefaultStateDir, ""
-	if runtime.GOOS == "darwin" {
-		defaultState, defaultSocket = macos.StateDir(), macos.Socket()
+	if len(args) == 1 && args[0] == "--tart-manifest" {
+		fmt.Print(macos.TartManifest())
+		return nil
 	}
-	stateDir := flags.String("state-dir", defaultState, "private runner instance directory")
-	statusSocket := flags.String("status-socket", defaultSocket, "Unix socket path for the read-only status endpoint")
+	flags := flag.NewFlagSet("ephemerad", flag.ContinueOnError)
+	path := flags.String("config", host.ConfigPath(), "configuration file")
+	cacheDir := flags.String("image-cache", host.ImageCache(), "image cache directory")
+	stateDir := flags.String("state-dir", host.StateDir(), "private runner instance directory")
+	statusSocket := flags.String("status-socket", host.DaemonStatusSocket(), "Unix socket path for the read-only status endpoint")
 	keyPath := flags.String("github-app-key", "", "override the GitHub App PEM path")
 	activationID := flags.String("activation-id", "", "LaunchAgent activation identifier")
 	create := flags.Bool("create", false, "create the configured Scale Set if absent")
