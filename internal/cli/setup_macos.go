@@ -18,9 +18,12 @@ import (
 	"github.com/illusions-lab/Ephemera/internal/config"
 	"github.com/illusions-lab/Ephemera/internal/macos"
 	"github.com/illusions-lab/Ephemera/internal/orders"
-	"github.com/illusions-lab/Ephemera/internal/status"
 	"github.com/illusions-lab/Ephemera/internal/vm"
+	"go.yaml.in/yaml/v3"
+	"golang.org/x/sys/unix"
 )
+
+var macSetupProbe = probeMacSetup
 
 func runMacSetup(automatic, resume bool, source, key, appName string, existingApp bool) error {
 	if os.Geteuid() == 0 {
@@ -29,133 +32,149 @@ func runMacSetup(automatic, resume bool, source, key, appName string, existingAp
 	if err := os.MkdirAll(macos.Root(), 0700); err != nil {
 		return err
 	}
-	info, err := os.Lstat(macos.Root())
+	var info unix.Stat_t
+	if err := unix.Lstat(macos.Root(), &info); err != nil {
+		return err
+	}
+	if info.Mode != unix.S_IFDIR|0700 || info.Uid != uint32(os.Geteuid()) {
+		return errors.New("Ephemera needs a private user-owned data directory (0700)")
+	}
+	executable, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	if !info.IsDir() || info.Mode().Perm() != 0700 {
-		return errors.New("Ephemera needs a private data directory (0700)")
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		return err
 	}
-
+	release := filepath.Dir(executable)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, 55*time.Minute)
 	defer cancel()
+	return macos.Activate(ctx, release, func() (*macos.Candidate, error) {
+		return prepareMacActivation(ctx, release, automatic, resume, source, key, appName, existingApp)
+	})
+}
+
+func prepareMacActivation(ctx context.Context, release string, automatic, resume bool, source, keyPath, appName string, existingApp bool) (*macos.Candidate, error) {
 	path := filepath.Join(macos.Root(), "config.yaml")
 	profile := filepath.Join(macos.Root(), "server-profile")
-	current := filepath.Join(macos.Root(), "current")
-	serverTool := filepath.Join(current, "server-config.sh")
-	if _, err := os.Stat(serverTool); err != nil {
-		return fmt.Errorf("open installed macOS setup tools (run install-macos.sh first): %w", err)
+	serverTool := filepath.Join(release, "server-config.sh")
+	for _, name := range []string{serverTool, filepath.Join(release, "ephemerad")} {
+		if _, err := os.Stat(name); err != nil {
+			return nil, fmt.Errorf("open installed macOS setup tools (run install-macos.sh first): %w", err)
+		}
 	}
 	choice, err := os.ReadFile(profile)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+		return nil, err
 	}
 	if err == nil && string(choice) != "personal\n" && string(choice) != "server\n" {
-		return fmt.Errorf("invalid setup profile in %s", profile)
+		return nil, fmt.Errorf("invalid setup profile in %s", profile)
 	}
 	server := string(choice) == "server\n"
+	validate := func(cfg config.Config, pem []byte) error { return macSetupProbe(ctx, cfg, pem) }
 	_, statErr := os.Lstat(path)
 	initial := errors.Is(statErr, os.ErrNotExist)
 	if statErr != nil && !initial {
-		return statErr
+		return nil, statErr
 	}
-	validate := func(cfg config.Config, pem []byte) error { return probeMacSetup(ctx, cfg, pem) }
-	if automatic {
-		if err := setupFromValidatedFiles(macos.Root(), source, key, resume || !initial, validate); err != nil {
-			return err
+	if automatic && resume {
+		if err := setupFromValidatedFiles(macos.Root(), source, keyPath, true, nil); err != nil {
+			return nil, err
 		}
-	} else if initial {
+	}
+	var cfg config.Config
+	var key []byte
+	switch {
+	case automatic && !resume:
+		cfg, err = config.Load(source)
+		if err == nil {
+			key, err = config.ReadKey(keyPath)
+		}
+		if err == nil {
+			err = validate(cfg, key)
+		}
+	case initial:
 		if !term.IsTerminal(os.Stdin.Fd()) || !term.IsTerminal(os.Stdout.Fd()) {
-			return errors.New("setup requires a terminal or --non-interactive with input files")
+			return nil, errors.New("setup requires a terminal or --non-interactive with input files")
 		}
 		if len(choice) == 0 {
 			preview, err := exec.CommandContext(ctx, serverTool, "--preview").Output()
 			if err != nil {
-				return fmt.Errorf("preview server settings: %w", err)
+				return nil, fmt.Errorf("preview server settings: %w", err)
 			}
 			server, err = setup.MacServerPrompt(strings.TrimSpace(string(preview)))
 			if errors.Is(err, huh.ErrUserAborted) {
-				return nil
+				return nil, nil
 			}
 			if err != nil {
-				return err
+				return nil, err
 			}
 		}
 		if err := setup.ConfigureMac(path, appName, existingApp, validate); err != nil {
-			return err
+			return nil, err
 		}
-		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-			return nil
+		cfg, err = config.Load(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		if err == nil {
+			key, err = config.ReadKey(macos.Key())
+		}
+	default:
+		cfg, err = config.Load(path)
+		if err == nil {
+			key, err = config.ReadKey(macos.Key())
+		}
+		if err == nil {
+			err = validate(cfg, key)
 		}
 	}
-	cfg, err := config.Load(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if !initial {
-		pem, err := config.ReadKey(macos.Key())
-		if err != nil {
-			return err
-		}
-		if err := validate(cfg, pem); err != nil {
-			return err
-		}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return nil, err
 	}
-
 	if len(choice) == 0 {
 		value := "personal\n"
 		if server {
 			value = "server\n"
 		}
 		if err := os.WriteFile(profile, []byte(value), 0600); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if err := os.MkdirAll(macos.StateDir(), 0700); err != nil {
-		return err
+		return nil, err
 	}
 	tart, err := vm.NewTart(filepath.Join(macos.StateDir(), "tart"), cfg.VM.VCPUs, cfg.VM.MemoryMiB)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := tart.Check(ctx); err != nil {
-		return err
+		return nil, err
 	}
-	if err := tart.PullImage(ctx, cfg.VM.ImageRef, os.Stdout); err != nil {
-		return fmt.Errorf("prepare Tart image: %w", err)
+	_, check, err := tart.ResolveImage(ctx, cfg.VM.ImageRef)
+	if err != nil {
+		return nil, err
+	}
+	if err := check(); err != nil {
+		return nil, err
 	}
 	if server && !automatic {
 		if err := runMacCommand(ctx, serverTool, "--apply"); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	if err := runMacCommand(ctx, filepath.Join(current, "activate-macos.sh")); err != nil {
-		return err
-	}
-
-	wait, cancelWait := context.WithTimeout(ctx, 45*time.Second)
-	defer cancelWait()
-	tick := time.NewTicker(500 * time.Millisecond)
-	defer tick.Stop()
-	wantIntake := "observing"
+	intake := "observing"
 	if cfg.Runner.Execute {
-		wantIntake = "executing"
+		intake = "executing"
 	}
-	for {
-		snapshot, err := status.Read(wait, macos.Socket())
-		if err == nil && snapshot.Phase == "Healthy" && snapshot.GitHub == "connected" &&
-			snapshot.Scope == cfg.GitHub.ScopeURL && snapshot.ScaleSet == cfg.GitHub.ScaleSetName && snapshot.Intake == wantIntake {
-			fmt.Printf("Ephemera is running (%s).\n", snapshot.Intake)
-			return nil
-		}
-		select {
-		case <-wait.Done():
-			return fmt.Errorf("LaunchAgent did not connect to GitHub; see %s: %w", filepath.Join(macos.Root(), "logs", "daemon.log"), wait.Err())
-		case <-tick.C:
-		}
-	}
+	return &macos.Candidate{Config: data, Key: key, ReplaceEditable: automatic && !resume, Scope: cfg.GitHub.ScopeURL, ScaleSet: cfg.GitHub.ScaleSetName, Intake: intake}, nil
 }
 
 func probeMacSetup(ctx context.Context, cfg config.Config, key []byte) error {

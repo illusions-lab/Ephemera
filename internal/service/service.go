@@ -18,6 +18,7 @@ import (
 
 type Options struct {
 	ConfigPath, CacheDir, KeyPath, StatusSocket, StateDir string
+	ActivationID                                          string
 	Create, Claim                                         bool
 }
 
@@ -28,7 +29,7 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 	prepare func(context.Context, string, image.Config, *slog.Logger) (string, func() error, error),
 	listen func(context.Context, orders.Config, *slog.Logger, func(context.Context, orders.Update) error) error,
 ) (result error) {
-	current := status.Snapshot{Phase: "Starting", GitHub: "pending", Intake: "observing"}
+	current := status.Snapshot{ActivationID: opts.ActivationID, Phase: "Starting", GitHub: "pending", Intake: "observing"}
 	if opts.Claim {
 		current.Intake = "test-claim"
 	}

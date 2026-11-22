@@ -18,6 +18,7 @@ import (
 const SocketPath = "/run/ephemera/status.sock"
 
 type Snapshot struct {
+	ActivationID  string     `json:"activation_id,omitempty"`
 	Phase         string     `json:"phase"`
 	FailedPhase   string     `json:"failed_phase,omitempty"`
 	GitHub        string     `json:"github"`
