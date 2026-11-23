@@ -118,8 +118,15 @@ TART_HOME="$TRIAL_TART_HOME" bash scripts/copy-host-xcode-to-tart.sh xcode-trial
 
 The copy streams the verified bundle to guest storage and checks its
 signature and build. Review the Apple Xcode and SDK license inside the guest,
-then complete Xcode first launch. The sealing step compiles both macOS and
-iOS smoke programs before it records a host-Xcode build receipt.
+then complete Xcode first launch. Each seal synchronizes the numbered WWDR
+intermediates in Apple's PKI catalog. It verifies each current certificate
+against the Apple roots shipped by macOS and adds missing intermediates to
+the guest System keychain. Multiple generations can coexist, since Apple
+uses them for different certificates and services. The receipt records the
+imported or already present fingerprints along with the toolchain. macOS
+and iOS smoke compilation checks run before the image is sealed. Sealed
+images receive the updated set when rebuilt. Jobs provide their own
+signing identities.
 
 ```sh
 TART_HOME="$TRIAL_TART_HOME" bash scripts/seal-host-xcode-tart-image.sh xcode-trial-27
@@ -129,8 +136,10 @@ Keep the trial and production Tart homes on the same volume. Sealing stops
 the guest, moves its disk into the deployment account's private Tart home,
 and prints a `local:apple-macos-...` reference for `vm.image_ref`. Set
 `vm.apple_toolchain: ios`, apply the configuration, and run the acceptance
-workflow with `apple_build=true`. This profile uses the host's single Xcode
-build. The separate full GitHub recipe retains its complete archive checks.
+workflow with `apple_build=true`. If the image will run distribution builds,
+run the consuming repository's real signing probe on a fresh job VM before
+retiring the previous image. This profile uses the host's single Xcode build.
+The separate full GitHub recipe retains its complete archive checks.
 
 ## Ubuntu ARM64 under the same Mac
 

@@ -27,8 +27,10 @@ host=$("$ephe" image check-host-xcode --json)
 version=$(jq -er '.version' <<< "$host")
 build=$(jq -er '.build' <<< "$host")
 os_build=$("$tart" exec "$guest" /usr/bin/sw_vers -buildVersion)
-"$tart" exec -i "$guest" /usr/bin/sudo -n /bin/bash -s -- "$version" "$build" >&2 <<'GUEST'
+wwdr_intermediates=$("$tart" exec -i "$guest" /usr/bin/sudo -n /bin/bash -s -- "$version" "$build" <<'GUEST'
 set -euo pipefail
+export LC_ALL=C
+exec 3>&1 1>&2
 app=/Applications/Xcode.app
 /usr/bin/codesign --verify --strict -R='anchor apple generic and identifier "com.apple.dt.Xcode" and certificate leaf[subject.O] = "Apple Inc."' "$app"
 export DEVELOPER_DIR="$app/Contents/Developer"
@@ -39,6 +41,54 @@ grep -Fxq "Xcode $1" <<< "$actual"
 grep -Fxq "Build version $2" <<< "$actual"
 tmp=$(mktemp -d -t ephe-image-smoke)
 trap 'rm -rf "$tmp"' EXIT
+
+# Code signing builds its CMS chain from certificates visible to the guest.
+system_keychain=/Library/Keychains/System.keychain
+apple_pki=https://www.apple.com/certificateauthority/
+download() {
+  /usr/bin/curl --fail --silent --show-error --location --retry 3 --max-time 30 \
+    --proto '=https' --proto-redir '=https' --max-filesize "$1" "$2" -o "$3"
+}
+download 1048576 "$apple_pki" "$tmp/apple-pki.html"
+paths=$(grep -Eo '/certificateauthority/AppleWWDRCAG[0-9]+\.cer' "$tmp/apple-pki.html" | sort -u) ||
+  { echo 'No WWDR generation certificates found in the Apple PKI catalog.' >&2; exit 1; }
+/usr/bin/security find-certificate -a -c 'Apple Root CA' -p \
+  /System/Library/Keychains/SystemRootCertificates.keychain > "$tmp/apple-roots.pem"
+
+manifest="$tmp/wwdr.tsv"
+now=$(/bin/date +%s)
+while IFS= read -r path; do
+  name=${path##*/}
+  download 65536 "$apple_pki$name" "$tmp/$name"
+  pem="$tmp/$name.pem"
+  /usr/bin/openssl x509 -inform DER -in "$tmp/$name" -out "$pem"
+  starts=$(/usr/bin/openssl x509 -in "$pem" -noout -startdate)
+  valid_from=$(/bin/date -j -u -f '%b %e %T %Y %Z' "${starts#notBefore=}" +%s)
+  if [[ "$valid_from" -gt "$now" ]] || ! /usr/bin/openssl x509 -in "$pem" -noout -checkend 0 >/dev/null; then
+    printf 'Skipping WWDR certificate outside its validity period: %s\n' "$name"
+    continue
+  fi
+  /usr/bin/openssl x509 -in "$pem" -noout -subject -nameopt RFC2253 |
+    grep -E '(^subject= *|,)CN=Apple Worldwide Developer Relations (Certification Authority|CA - G[0-9]+)(,|$)' >/dev/null
+  /usr/bin/openssl x509 -in "$pem" -noout -text | grep -F 'CA:TRUE' >/dev/null
+  /usr/bin/openssl verify -trusted "$tmp/apple-roots.pem" "$pem"
+  fingerprint=$(/usr/bin/openssl x509 -in "$pem" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d :)
+  printf '%s\t%s\n' "$name" "$fingerprint" >> "$manifest"
+done <<< "$paths"
+[[ -s "$manifest" ]] || { echo 'No valid WWDR intermediates in the Apple PKI catalog.' >&2; exit 1; }
+
+has_certificate() {
+  /usr/bin/security find-certificate -a -Z "$system_keychain" |
+    grep -Fx "SHA-256 hash: $1" >/dev/null
+}
+while IFS=$'\t' read -r name fingerprint; do
+  if ! has_certificate "$fingerprint"; then
+    /usr/bin/security add-certificates -k "$system_keychain" "$tmp/$name.pem"
+  fi
+  has_certificate "$fingerprint" ||
+    { printf 'WWDR intermediate %s is missing from the VM system keychain.\n' "$name" >&2; exit 1; }
+done < "$manifest"
+
 printf 'print("Ephemera macOS compile check")\n' > "$tmp/main.swift"
 /usr/bin/xcrun --sdk macosx swiftc "$tmp/main.swift" -o "$tmp/smoke"
 "$tmp/smoke"
@@ -47,7 +97,9 @@ sdk=$(/usr/bin/xcrun --sdk iphoneos --show-sdk-path)
 test -s "$tmp/ios.o"
 /bin/launchctl disable system/com.openssh.sshd
 /bin/sync
+cat "$manifest" >&3
 GUEST
+)
 # Shut down from the guest so the newly prepared APFS volume is flushed.
 "$tart" exec "$guest" /usr/bin/sudo -n /sbin/shutdown -h now >&2 || true
 stopped=false
@@ -65,8 +117,13 @@ receipt="$state/$name.apple-build.json"
 [[ ! -e "$destination" && ! -e "$receipt" ]]
 draft=$(mktemp "$state/.apple-build.XXXXXXXX")
 trap 'if [[ -e "$draft" ]]; then unlink "$draft"; fi' EXIT
-jq -n --arg os "$os_build" --arg version "$version" --arg build "$build" \
-  '{source:"apple-ipsw+host-xcode",os_build:$os,xcode_version:$version,xcode_build:$build}' > "$draft"
+jq -eRn --arg os "$os_build" --arg version "$version" --arg build "$build" \
+  '[inputs | if test("^AppleWWDRCAG[0-9]+\\.cer\\t[A-F0-9]{64}$")
+    then split("\t") | {name:.[0],sha256:.[1]}
+    else error("invalid WWDR certificate receipt")
+    end] | select(length > 0) |
+    {source:"apple-ipsw+host-xcode",os_build:$os,xcode_version:$version,xcode_build:$build,wwdr_intermediates:.}' \
+  <<< "$wwdr_intermediates" > "$draft"
 mv "$source" "$destination"
 if ! mv "$draft" "$receipt"; then
   mv "$destination" "$source"
