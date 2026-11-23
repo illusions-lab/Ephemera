@@ -293,8 +293,9 @@ func (t *Tart) runGuest(startup context.Context, i Instance, jit string, ready c
 	if err := startup.Err(); err != nil {
 		return err
 	}
+	// Start a login session so macOS Security can use the runner's user keychain.
 	runner := t.command(context.Background(), "exec", "-i", i.Resource,
-		"/usr/bin/sudo", "-n", "-u", "ephemera-runner", "/bin/sh", "-c", tartLaunch)
+		"/usr/bin/sudo", "-n", "/usr/bin/su", "-l", "ephemera-runner", "-c", tartLaunch)
 	runner.Stdin = strings.NewReader(jit + "\n")
 	lines, err := runner.StdoutPipe()
 	if err != nil {
