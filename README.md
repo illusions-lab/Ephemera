@@ -33,9 +33,9 @@ sudo ephe doctor
 
 ### macOS
 
-**Recommended host:** An Apple M2 or newer with at least 16 GB of memory, running macOS 26 or newer. An M4 with 32 GB is ideal.
+**Recommended host:** An Apple M2 or newer with at **least 16 GB of memory**, running macOS 26 or newer. An M4 with 32 GB is ideal.
 
-My own host is an M2 Mac mini with 8 GB. Mac prices made that decision for me. It runs my jobs, and macOS still makes an awkward server.
+**Do not use a Mac mini with less than 16 GB of memory.** My host is an M2 Mac mini with 8 GB of memory. Tart refuses to run on machines with less than 4 GB, so I can only run one runner at a time. It’s very slow.
 
 **Xcode is required for macOS and iOS build jobs.** The task VM must contain
 the full Apple Xcode application and the SDKs your build needs. If you are
