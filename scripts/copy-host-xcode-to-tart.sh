@@ -57,6 +57,7 @@ actual_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 
 actual_build=$(/usr/libexec/PlistBuddy -c 'Print :ProductBuildVersion' "$app/Contents/version.plist")
 [[ "$actual_version" == "$expected_version" && "$actual_build" == "$expected_build" ]]
 mv "$app" "$destination"
+/bin/sync
 GUEST
 )
 

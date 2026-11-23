@@ -46,9 +46,19 @@ sdk=$(/usr/bin/xcrun --sdk iphoneos --show-sdk-path)
 /usr/bin/xcrun --sdk iphoneos swiftc -target arm64-apple-ios18.0 -sdk "$sdk" -emit-object "$tmp/main.swift" -o "$tmp/ios.o"
 test -s "$tmp/ios.o"
 /bin/launchctl disable system/com.openssh.sshd
+/bin/sync
 GUEST
-"$tart" stop "$guest" >&2
-"$tart" list --source local --format json | jq -e --arg name "$guest" 'any(.[]; .Name == $name and .State == "stopped")' >/dev/null
+# Shut down from the guest so the newly prepared APFS volume is flushed.
+"$tart" exec "$guest" /usr/bin/sudo -n /sbin/shutdown -h now >&2 || true
+stopped=false
+for ((attempt=0; attempt<60; attempt++)); do
+  if "$tart" list --source local --format json | jq -e --arg name "$guest" 'any(.[]; .Name == $name and .State == "stopped")' >/dev/null; then
+    stopped=true
+    break
+  fi
+  sleep 2
+done
+"$stopped" || { echo 'Guest did not shut down cleanly; no image was sealed.' >&2; exit 1; }
 name="apple-macos-$(uuidgen | tr '[:upper:]' '[:lower:]')"
 destination="$state/vms/$name"
 receipt="$state/$name.apple-build.json"
