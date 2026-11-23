@@ -119,6 +119,9 @@ func Listen(ctx context.Context, cfg Config, logger *slog.Logger, handle func(co
 			logger.Warn("Could not close Scale Set session", "scale_set_id", set.ID, "error", err)
 		}
 	}()
+	if err := validateMessageQueue(s.Session()); err != nil {
+		return err
+	}
 	logger.Info("Listening for GitHub jobs", "scale_set", set.Name, "scale_set_id", set.ID, "intake_enabled", cfg.Claim || cfg.Capacity != nil)
 	group := set.RunnerGroupName
 	if group == "" {
@@ -135,7 +138,7 @@ func Listen(ctx context.Context, cfg Config, logger *slog.Logger, handle func(co
 		}
 		labels = &names
 	}
-	err = pollTracked(ctx, s, cfg.MaxConcurrent, cfg.Claim, cfg.CheckImage, cfg.Capacity, cfg.Polled, cfg.Acquisitions, cfg.BeginAcquire, func(ctx context.Context, update Update) error {
+	err = pollTracked(ctx, checkedMessageSession{s}, cfg.MaxConcurrent, cfg.Claim, cfg.CheckImage, cfg.Capacity, cfg.Polled, cfg.Acquisitions, cfg.BeginAcquire, func(ctx context.Context, update Update) error {
 		update.ScaleSetID = set.ID
 		update.RunnerGroup, update.Labels = group, labels
 		return handle(ctx, update)
@@ -147,6 +150,35 @@ func Listen(ctx context.Context, cfg Config, logger *slog.Logger, handle func(co
 		return nil
 	}
 	return err
+}
+
+type checkedMessageSession struct {
+	*scaleset.MessageSessionClient
+}
+
+func (s checkedMessageSession) GetMessage(ctx context.Context, lastMessageID, capacity int) (*scaleset.RunnerScaleSetMessage, error) {
+	message, err := s.MessageSessionClient.GetMessage(ctx, lastMessageID, capacity)
+	if err != nil {
+		// The SDK can replace the session while retrying an expired token.
+		if queueErr := validateMessageQueue(s.Session()); queueErr != nil {
+			return nil, queueErr
+		}
+	}
+	return message, err
+}
+
+func validateMessageQueue(session scaleset.RunnerScaleSetSession) error {
+	if strings.TrimSpace(session.MessageQueueURL) == "" {
+		return errors.New("GitHub Scale Set session returned an empty messageQueueUrl")
+	}
+	queue, err := url.ParseRequestURI(session.MessageQueueURL)
+	if err != nil || queue.Scheme != "https" || queue.Hostname() == "" || queue.User != nil {
+		return errors.New("GitHub Scale Set session returned an invalid HTTPS messageQueueUrl")
+	}
+	if strings.TrimSpace(session.MessageQueueAccessToken) == "" {
+		return errors.New("GitHub Scale Set session returned no message queue token")
+	}
+	return nil
 }
 
 // ProbeScaleSet authenticates and checks for the configured scale set without

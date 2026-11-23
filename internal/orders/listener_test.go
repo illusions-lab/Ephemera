@@ -3,6 +3,7 @@ package orders
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"reflect"
@@ -320,5 +321,30 @@ func TestAwaitSessionHandoffRetriesOnlyOwnerConflict(t *testing.T) {
 		} else if !errors.Is(err, firstError) || attempts != 1 || notices != 0 {
 			t.Fatalf("unexpected conflict retry: %v, %d attempts, %d notices", err, attempts, notices)
 		}
+	}
+}
+
+func TestValidateMessageQueueRejectsEmptyBrokerEndpoint(t *testing.T) {
+	var s scaleset.RunnerScaleSetSession
+	if err := json.Unmarshal([]byte(`{"statistics":{}}`), &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Statistics == nil {
+		t.Fatal("expected broker statistics to decode without the queue field")
+	}
+	if err := validateMessageQueue(s); err == nil || !strings.Contains(err.Error(), "empty messageQueueUrl") {
+		t.Fatalf("expected a precise empty queue error, got %v", err)
+	}
+	s.MessageQueueURL = "http://broker.example"
+	if err := validateMessageQueue(s); err == nil {
+		t.Fatal("accepted an insecure broker endpoint")
+	}
+	s.MessageQueueURL = "https://broker.example/queue"
+	if err := validateMessageQueue(s); err == nil {
+		t.Fatal("accepted a session without a queue token")
+	}
+	s.MessageQueueAccessToken = "synthetic"
+	if err := validateMessageQueue(s); err != nil {
+		t.Fatal(err)
 	}
 }
