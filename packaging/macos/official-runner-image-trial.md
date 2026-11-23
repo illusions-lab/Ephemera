@@ -118,12 +118,15 @@ TART_HOME="$TRIAL_TART_HOME" bash scripts/copy-host-xcode-to-tart.sh xcode-trial
 
 The copy streams the verified bundle to guest storage and checks its
 signature and build. Review the Apple Xcode and SDK license inside the guest,
-then complete Xcode first launch. The sealing step ensures the guest's System
-keychain contains Apple's WWDR G3 intermediate, downloading it from Apple
-and verifying its SHA-256 fingerprint when needed. It compiles both macOS and
-iOS smoke programs before recording the fingerprint and toolchain in the
-host-Xcode build receipt. The guest uses macOS's system root trust and jobs
-provide their own signing identities.
+then complete Xcode first launch. Each seal synchronizes the numbered WWDR
+intermediates in Apple's PKI catalog. It verifies each current certificate
+against the Apple roots shipped by macOS and adds missing intermediates to
+the guest System keychain. Multiple generations can coexist, since Apple
+uses them for different certificates and services. The receipt records the
+imported or already present fingerprints along with the toolchain. macOS
+and iOS smoke compilation checks run before the image is sealed. Sealed
+images receive the updated set when rebuilt. Jobs provide their own
+signing identities.
 
 ```sh
 TART_HOME="$TRIAL_TART_HOME" bash scripts/seal-host-xcode-tart-image.sh xcode-trial-27
