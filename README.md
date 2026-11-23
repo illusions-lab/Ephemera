@@ -222,7 +222,10 @@ GitHub Actions settings before the first production run.
 [`actions/runner-images`](https://github.com/actions/runner-images) repository
 as the source of the image build recipe. Pin the upstream revision and build
 the golden image on the machine that will run the VMs. Third-party prebuilt
-images and third-party image recipes are prohibited. OS installation media
+images and third-party image recipes are prohibited. macOS deployments may
+use an Apple IPSW and the single Apple Xcode build installed on the deployment
+Mac. This host-Xcode profile has its own build receipt and acceptance tests.
+OS installation media
 and vendor tools required by the GitHub recipe must come from their official
 publishers.
 

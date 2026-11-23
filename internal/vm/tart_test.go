@@ -297,3 +297,18 @@ func TestLocalGitHubTartImageRequiresBuildReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAppleTartImageReceipt(t *testing.T) {
+	backend := &Tart{home: t.TempDir()}
+	const name = "apple-macos-0f142218-ac21-4c06-afb2-a725d7078f12"
+	if err := backend.checkLocalImageReceipt(name); err == nil {
+		t.Fatal("accepted an Apple image without its build receipt")
+	}
+	const receipt = `{"source":"apple-ipsw+host-xcode","os_build":"26B131","xcode_version":"27.2","xcode_build":"27B52"}`
+	if err := os.WriteFile(backend.home+"/"+name+".apple-build.json", []byte(receipt), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.checkLocalImageReceipt(name); err != nil {
+		t.Fatal(err)
+	}
+}

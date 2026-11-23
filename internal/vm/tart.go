@@ -159,13 +159,8 @@ func (t *Tart) CheckImage(ctx context.Context, ref string) error {
 	check, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if name, local := strings.CutPrefix(ref, "local:"); local {
-		id, ok := strings.CutPrefix(name, "github-macos26-")
-		if !ok || !tartName.MatchString("ephemera-"+id) {
-			return errors.New("invalid local GitHub Tart image name")
-		}
-		provenance, err := os.ReadFile(filepath.Join(t.home, name+".github-revision"))
-		if err != nil || strings.TrimSpace(string(provenance)) != macos.GitHubImageRevision {
-			return errors.New("local Tart image is missing the pinned GitHub build receipt")
+		if err := t.checkLocalImageReceipt(name); err != nil {
+			return err
 		}
 		entries, err := t.list(check, "local")
 		if err != nil {
@@ -176,7 +171,7 @@ func (t *Tart) CheckImage(ctx context.Context, ref string) error {
 				return nil
 			}
 		}
-		return errors.New("local GitHub Tart image is missing or running")
+		return errors.New("local Tart image is missing or running")
 	}
 	entries, err := t.list(check, "oci")
 	if err != nil {
@@ -188,6 +183,31 @@ func (t *Tart) CheckImage(ctx context.Context, ref string) error {
 		}
 	}
 	return errors.New("pinned Tart image is missing from the private OCI cache")
+}
+
+func (t *Tart) checkLocalImageReceipt(name string) error {
+	if id, ok := strings.CutPrefix(name, "github-macos26-"); ok && tartName.MatchString("ephemera-"+id) {
+		provenance, err := os.ReadFile(filepath.Join(t.home, name+".github-revision"))
+		if err == nil && strings.TrimSpace(string(provenance)) == macos.GitHubImageRevision {
+			return nil
+		}
+		return errors.New("local Tart image is missing the pinned GitHub build receipt")
+	}
+	if id, ok := strings.CutPrefix(name, "apple-macos-"); ok && tartName.MatchString("ephemera-"+id) {
+		var receipt struct {
+			Source       string `json:"source"`
+			OSBuild      string `json:"os_build"`
+			XcodeVersion string `json:"xcode_version"`
+			XcodeBuild   string `json:"xcode_build"`
+		}
+		data, err := os.ReadFile(filepath.Join(t.home, name+".apple-build.json"))
+		if err == nil && json.Unmarshal(data, &receipt) == nil && receipt.Source == "apple-ipsw+host-xcode" &&
+			receipt.OSBuild != "" && receipt.XcodeVersion != "" && receipt.XcodeBuild != "" {
+			return nil
+		}
+		return errors.New("local Apple Tart image is missing a verified host-Xcode build receipt")
+	}
+	return errors.New("invalid local Tart image name")
 }
 
 func (t *Tart) owns(i Instance) error {

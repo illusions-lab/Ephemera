@@ -143,7 +143,7 @@ func ValidateScope(value string) error {
 	return nil
 }
 
-var localTartImageReference = regexp.MustCompile(`^local:github-macos26-[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$`)
+var localTartImageReference = regexp.MustCompile(`^local:(github-macos26|apple-macos)-[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$`)
 var tartImageReference = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9][a-z0-9._/-]*@sha256:[a-f0-9]{64}$`)
 
 func (cfg Config) Validate() error {
@@ -163,9 +163,11 @@ func (cfg Config) Validate() error {
 	case cfg.VM.Backend != "qemu" && cfg.VM.Backend != "tart":
 		return errors.New("vm.backend must be qemu or tart")
 	case cfg.VM.Backend == "tart" && (cfg.VM.Image != "macos" || cfg.VM.Arch != "arm64" || cfg.VM.Profile != "" || (!tartImageReference.MatchString(cfg.VM.ImageRef) && !localTartImageReference.MatchString(cfg.VM.ImageRef))):
-		return errors.New("tart requires vm.image macos, vm.arch arm64 and a GitHub local build or an OCI vm.image_ref pinned by SHA-256 digest")
+		return errors.New("tart requires vm.image macos, vm.arch arm64 and a verified local build or an OCI vm.image_ref pinned by SHA-256 digest")
 	case cfg.VM.Backend == "qemu" && cfg.VM.ImageRef != "":
 		return errors.New("vm.image_ref is only supported by tart")
+	case strings.HasPrefix(cfg.VM.ImageRef, "local:apple-macos-") && cfg.VM.AppleToolchain == "":
+		return errors.New("an Apple host-Xcode image requires vm.apple_toolchain macos or ios")
 	case cfg.VM.AppleToolchain != "" && (cfg.VM.Backend != "tart" || (cfg.VM.AppleToolchain != "macos" && cfg.VM.AppleToolchain != "ios")):
 		return errors.New("vm.apple_toolchain must be macos or ios and requires Tart")
 	case cfg.VM.HostReserveMiB != 0 && (cfg.VM.HostReserveMiB < 256 || cfg.VM.HostReserveMiB > math.MaxInt32):

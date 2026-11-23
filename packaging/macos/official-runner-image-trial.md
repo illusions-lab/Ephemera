@@ -116,12 +116,21 @@ ephe image check-host-xcode --version 27.2 --build 27B52
 TART_HOME="$TRIAL_TART_HOME" bash scripts/copy-host-xcode-to-tart.sh xcode-trial-27 27.2 27B52
 ```
 
-The copy streams the verified bundle to guest storage, verifies its signature
-and build there, runs first-launch provisioning, and checks that both SDK
-paths exist. It leaves a standalone installation at `/Applications/Xcode.app`
-inside the guest. The trial is suitable for testing Apple build compatibility.
-The full GitHub image recipe still validates its own complete toolset and
-archive checksums before it records a GitHub build receipt.
+The copy streams the verified bundle to guest storage and checks its
+signature and build. Review the Apple Xcode and SDK license inside the guest,
+then complete Xcode first launch. The sealing step compiles both macOS and
+iOS smoke programs before it records a host-Xcode build receipt.
+
+```sh
+TART_HOME="$TRIAL_TART_HOME" bash scripts/seal-host-xcode-tart-image.sh xcode-trial-27
+```
+
+Keep the trial and production Tart homes on the same volume. Sealing stops
+the guest, moves its disk into the deployment account's private Tart home,
+and prints a `local:apple-macos-...` reference for `vm.image_ref`. Set
+`vm.apple_toolchain: ios`, apply the configuration, and run the acceptance
+workflow with `apple_build=true`. This profile uses the host's single Xcode
+build. The separate full GitHub recipe retains its complete archive checks.
 
 ## Ubuntu ARM64 under the same Mac
 

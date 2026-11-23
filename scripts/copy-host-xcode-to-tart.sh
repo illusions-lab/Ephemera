@@ -53,20 +53,13 @@ trap 'rm -rf "$stage"; rmdir "$lock"' EXIT
 /usr/bin/tar -xf - -C "$stage"
 app="$stage/$name"
 /usr/bin/codesign --verify --deep --strict -R='anchor apple generic and identifier "com.apple.dt.Xcode" and certificate leaf[subject.O] = "Apple Inc."' "$app"
-export DEVELOPER_DIR="$app/Contents/Developer"
-tool="$DEVELOPER_DIR/usr/bin/xcodebuild"
-actual=$("$tool" -version)
-grep -Fxq "Xcode $expected_version" <<< "$actual"
-grep -Fxq "Build version $expected_build" <<< "$actual"
-"$tool" -runFirstLaunch
-for sdk in macosx iphoneos; do
-  path=$(/usr/bin/xcrun --sdk "$sdk" --show-sdk-path)
-  test -d "$path"
-done
+actual_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
+actual_build=$(/usr/libexec/PlistBuddy -c 'Print :ProductBuildVersion' "$app/Contents/version.plist")
+[[ "$actual_version" == "$expected_version" && "$actual_build" == "$expected_build" ]]
 mv "$app" "$destination"
 GUEST
 )
 
 /usr/bin/tar -cf - -C "$parent" "$name" |
   "$tart" exec -i "$vm" /usr/bin/sudo -n /bin/bash -c "$guest_copy" copy-host-xcode "$name" "$version" "$build"
-printf 'Copied and verified Xcode %s (%s) inside %s.\n' "$version" "$build" "$vm"
+printf 'Staged verified Xcode %s (%s) inside %s. Complete guest first launch before sealing.\n' "$version" "$build" "$vm"
