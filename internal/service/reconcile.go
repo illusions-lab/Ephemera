@@ -458,6 +458,7 @@ func (r *reconciler) reconcile(ctx context.Context, now time.Time) (int, status.
 	if r.images != nil && !r.draining && !manual && now.After(r.nextPrune) {
 		r.nextPrune = now.Add(30 * time.Second)
 		r.pruneImages()
+		r.pruneManualTartImages()
 	}
 	return free, counts
 }

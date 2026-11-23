@@ -127,3 +127,13 @@ For an offline guest test, set `EPHEMERA_TART_SMOKE_HOME` to a private Tart
 directory and `EPHEMERA_TART_SMOKE_IMAGE` to the pinned reference in the
 example config. Use `go test ./internal/vm -run TestTartGuestSmoke -v -timeout 20m`.
 This test uses a synthetic credential and cleans up the disposable clone.
+
+
+### Tart image retention
+
+After a successful manual image switch, Ephemera keeps the active prepared
+image and one previous prepared image for rollback. Older tracked prepared
+images and their unused OCI references are cleaned after the activation
+commits. Images still used by a VM or an image-channel rollback are retained.
+Local source templates and cache entries from before retention tracking are
+preserved.

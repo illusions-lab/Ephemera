@@ -20,6 +20,7 @@ import (
 	"github.com/illusions-lab/Ephemera/internal/macos"
 )
 
+var pinnedTartSource = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9][a-z0-9._/-]*@sha256:[a-f0-9]{64}$`)
 var tartName = regexp.MustCompile(`^ephemera-[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$`)
 
 type Tart struct {
@@ -447,6 +448,30 @@ func (t *Tart) RemoveCachedImage(ctx context.Context, ref string) error {
 		if entry.Name == ref {
 			if entry.Running {
 				return errors.New("cannot remove running Tart base")
+			}
+			return t.command(ctx, "delete", ref).Run()
+		}
+	}
+	return nil
+}
+
+// RemoveCachedSource drops only an exact pinned OCI reference from Ephemera's
+// private Tart cache. A locally built source remains available to its owner.
+func (t *Tart) RemoveCachedSource(ctx context.Context, ref string) error {
+	if strings.HasPrefix(ref, "local:") {
+		return nil
+	}
+	if !pinnedTartSource.MatchString(ref) {
+		return errors.New("refusing to remove an unpinned Tart source")
+	}
+	entries, err := t.list(ctx, "oci")
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name == ref {
+			if entry.Running {
+				return errors.New("cannot remove running Tart source")
 			}
 			return t.command(ctx, "delete", ref).Run()
 		}

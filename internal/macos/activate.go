@@ -54,6 +54,27 @@ func Activate(ctx context.Context, release string, prepare func() (*Candidate, e
 	return a.run(ctx, release, prepare)
 }
 
+// WithInactiveActivation serializes image pruning with candidate preparation
+// and rollback, including before the activation journal has been written.
+func WithInactiveActivation(action func()) error {
+	fd, err := openActivationLock(Root())
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+	if err := unix.Flock(fd, unix.LOCK_SH|unix.LOCK_NB); err != nil {
+		if errors.Is(err, unix.EWOULDBLOCK) {
+			return nil
+		}
+		return err
+	}
+	pending, err := ActivationPending()
+	if err == nil && !pending {
+		action()
+	}
+	return err
+}
+
 // ActiveConfigPath reads the snapshot pinned by the installed LaunchAgent.
 func ActiveConfigPath(ctx context.Context) (string, error) {
 	home, err := os.UserHomeDir()

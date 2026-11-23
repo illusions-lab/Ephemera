@@ -36,7 +36,7 @@ parent=${app%/*}
 
 # Reject an incomplete guest before copying a large archive.
 "$tart" exec "$vm" /usr/bin/sudo -n /usr/bin/true
-"$tart" exec "$vm" /usr/bin/test ! -e /Applications/Xcode.app
+"$tart" exec "$vm" /bin/sh -c 'test ! -e /Applications/Xcode.app && test ! -L /Applications/Xcode.app'
 
 guest_copy=$(cat <<'GUEST'
 set -euo pipefail

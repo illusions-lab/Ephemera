@@ -54,6 +54,8 @@ type imageUpdates struct {
 	prune              func(context.Context, string) error
 	rebuild            func(context.Context) (string, func() error, error)
 	managed            func(string) bool
+	manualSource       string
+	pruneSource        func(context.Context, string) error
 }
 
 func newImageUpdates(cfg config.Config, root string, selection backend.Selection, logger *slog.Logger, build backend.ImageBuilder, channelFile string, managedBaseline ...string) *imageUpdates {
@@ -76,6 +78,7 @@ func newImageUpdates(cfg config.Config, root string, selection backend.Selection
 		tart := selection.VM.(*vm.Tart)
 		u.managed = func(id string) bool { return strings.HasPrefix(id, "ephemera-base-") }
 		u.prune = tart.RemoveCachedImage
+		u.pruneSource = tart.RemoveCachedSource
 	} else {
 		keyedDirectory := regexp.MustCompile(`^ubuntu-(amd64|arm64)-[a-f0-9]{64}(\.repair-[0-9]+)?$`)
 		u.managed = func(id string) bool {
@@ -179,11 +182,28 @@ func (u *imageUpdates) recover(ctx context.Context, baseline preparedImage) prep
 }
 
 func (u *imageUpdates) save(next updateState) error {
-	data, err := json.Marshal(next)
+	if err := writeImageState(u.path, next); err != nil {
+		return err
+	}
+	u.state = next
+	dir := filepath.Dir(u.path)
+	directory, err := os.Open(dir)
+	if err == nil {
+		defer directory.Close()
+		err = directory.Sync()
+	}
+	if err != nil {
+		u.logger.Error("Sync image update directory", "error", err)
+	}
+	return nil
+}
+
+func writeImageState(path string, state any) error {
+	data, err := json.Marshal(state)
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(u.path)
+	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
@@ -196,20 +216,7 @@ func (u *imageUpdates) save(next updateState) error {
 	if err := errors.Join(writeErr, f.Sync(), f.Close()); err != nil {
 		return err
 	}
-	if err := os.Rename(f.Name(), u.path); err != nil {
-		return err
-	}
-	// The rename is the commit point. A directory sync failure cannot undo it.
-	u.state = next
-	directory, err := os.Open(dir)
-	if err == nil {
-		defer directory.Close()
-		err = directory.Sync()
-	}
-	if err != nil {
-		u.logger.Error("Sync image update directory", "error", err)
-	}
-	return nil
+	return os.Rename(f.Name(), path)
 }
 
 func (u *imageUpdates) watch(ctx context.Context, r *reconciler, start updateState) {

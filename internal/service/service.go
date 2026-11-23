@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"runtime"
 	"sync/atomic"
 	"time"
 
@@ -176,6 +177,9 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 			managedCache = append(managedCache, opts.CacheDir)
 		}
 		updates := newImageUpdates(cfg, root, selected, logger, prepare, opts.ImageChannelFile, managedCache...)
+		if runtime.GOOS == "darwin" && opts.ActivationID != "" && root == host.StateDir() && cfg.VM.Backend == "tart" {
+			updates.manualSource = cfg.VM.ImageRef
+		}
 		return execute(ctx, cfg, orderConfig, selected.Namespace, store, selected.VM, runners, logger, listen, prepareCurrent,
 			func(connected, recovering, stopping bool, update orders.Update, counts status.Instances) error {
 				current.Instances = &counts
