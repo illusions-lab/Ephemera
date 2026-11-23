@@ -208,6 +208,18 @@ GitHub Actions settings before the first production run.
 
 ### Runner images and readiness
 
+**Image source policy.** For macOS and Linux guests, use the official GitHub
+[`actions/runner-images`](https://github.com/actions/runner-images) repository
+as the source of the image build recipe. Pin the upstream revision and build
+the golden image on the machine that will run the VMs. Third-party prebuilt
+images and third-party image recipes are prohibited. OS installation media
+and vendor tools required by the GitHub recipe must come from their official
+publishers.
+
+The current defaults in the table below predate this policy. The
+[official image trial](packaging/macos/official-runner-image-trial.md)
+tracks validation before those defaults can be migrated.
+
 | Guest image | Architecture | Base image and backend |
 | --- | --- | --- |
 | Ubuntu 24.04 (`ubuntu-24.04`, `ubuntu-latest` in the setup catalog) | AMD64 | Ubuntu cloud image, QEMU/KVM on a matching Linux host |

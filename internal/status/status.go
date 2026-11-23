@@ -39,6 +39,7 @@ type Snapshot struct {
 	Scope         string       `json:"scope,omitempty"`
 	ScaleSet      string       `json:"scale_set,omitempty"`
 	Backend       string       `json:"backend,omitempty"`
+	ImageSource   string       `json:"image_source,omitempty"`
 	Instances     *Instances   `json:"instances,omitempty"`
 	Intake        string       `json:"intake"`
 	MaxConcurrent int          `json:"max_concurrent,omitempty"`

@@ -209,6 +209,9 @@ func printStatus(w io.Writer, report statusReport) {
 			fmt.Fprintf(w, "Runner image rolled back (%s)\n", update.RollbackReason)
 		}
 	}
+	if s.ImageSource != "" {
+		fmt.Fprintf(w, "%-13s %s\n", "Image source", s.ImageSource)
+	}
 	if s.Backend != "" {
 		fmt.Fprintf(w, "%-13s %s\n", "VM backend", s.Backend)
 	}

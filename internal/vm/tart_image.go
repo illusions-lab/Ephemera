@@ -32,6 +32,11 @@ func (t *Tart) preparedPath(ref, version, digest, toolchain string) string {
 }
 
 func (t *Tart) CheckPreparedImage(ctx context.Context, ref, version, digest, toolchain string) (string, error) {
+	if strings.HasPrefix(ref, "local:") {
+		if err := t.CheckImage(ctx, ref); err != nil {
+			return "", err
+		}
+	}
 	data, err := os.ReadFile(t.preparedPath(ref, version, digest, toolchain))
 	if err != nil {
 		return "", err

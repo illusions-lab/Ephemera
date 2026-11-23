@@ -134,6 +134,9 @@ func (t *Tart) list(ctx context.Context, source string) ([]tartVM, error) {
 }
 
 func (t *Tart) ResolveImage(ctx context.Context, ref string, progress io.Writer) (string, func() error, error) {
+	if strings.HasPrefix(ref, "local:") {
+		return ref, func() error { return t.CheckImage(context.Background(), ref) }, t.CheckImage(ctx, ref)
+	}
 	pull, cancel := context.WithTimeout(ctx, 45*time.Minute)
 	defer cancel()
 	cmd := t.command(pull, "pull", ref)
@@ -154,6 +157,26 @@ func (t *Tart) CheckImage(ctx context.Context, ref string) error {
 	}
 	check, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	if name, local := strings.CutPrefix(ref, "local:"); local {
+		id, ok := strings.CutPrefix(name, "github-macos26-")
+		if !ok || !tartName.MatchString("ephemera-"+id) {
+			return errors.New("invalid local GitHub Tart image name")
+		}
+		provenance, err := os.ReadFile(filepath.Join(t.home, name+".github-revision"))
+		if err != nil || strings.TrimSpace(string(provenance)) != macos.GitHubImageRevision {
+			return errors.New("local Tart image is missing the pinned GitHub build receipt")
+		}
+		entries, err := t.list(check, "local")
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if entry.Name == name && !entry.Running {
+				return nil
+			}
+		}
+		return errors.New("local GitHub Tart image is missing or running")
+	}
 	entries, err := t.list(check, "oci")
 	if err != nil {
 		return err
@@ -177,7 +200,8 @@ func (t *Tart) Prepare(ctx context.Context, i Instance) error {
 	if err := t.owns(i); err != nil {
 		return err
 	}
-	clone := t.command(ctx, "clone", i.Image, i.Resource)
+	image := strings.TrimPrefix(i.Image, "local:")
+	clone := t.command(ctx, "clone", image, i.Resource)
 	var diagnostic boundedVMOutput
 	clone.Stderr = &diagnostic
 	if err := tartDiagnostic(clone.Run(), diagnostic.output.String()); err != nil {

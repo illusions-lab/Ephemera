@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/illusions-lab/Ephemera/internal/macos"
 )
 
 func TestTartReadinessRequiresRunnerSignal(t *testing.T) {
@@ -265,5 +267,33 @@ func TestTartToolchainChangesPreparedImageKey(t *testing.T) {
 	ios := tartImageKey("image", "version", "digest", "ios")
 	if plain == mac || mac == ios || plain == ios || ios == tartImageKey("new-image", "version", "digest", "ios") {
 		t.Fatal("toolchain requirements and image revisions must use distinct cache entries")
+	}
+}
+
+func TestLocalGitHubTartImageRequiresBuildReceipt(t *testing.T) {
+	const reference = "local:github-macos26-0f142218-ac21-4c06-afb2-a725d7078f12"
+	name := strings.TrimPrefix(reference, "local:")
+	home := t.TempDir()
+	if err := os.Chmod(home, 0700); err != nil {
+		t.Fatal(err)
+	}
+	binary := home + "/tart"
+	script := "#!/bin/sh\nset -eu\ntest \"$*\" = 'list --source local --format json'\nprintf '%s\\n' '[{\"Name\":\"" + name + "\",\"Running\":false}]'\n"
+	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	tart := &Tart{binary: binary, home: home}
+	if _, _, err := tart.ResolveImage(t.Context(), reference, nil); err == nil || !strings.Contains(err.Error(), "build receipt") {
+		t.Fatalf("expected missing receipt, got %v", err)
+	}
+	if err := os.WriteFile(home+"/"+name+".github-revision", []byte(macos.GitHubImageRevision+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, verify, err := tart.ResolveImage(t.Context(), reference, nil)
+	if err != nil || got != reference || verify == nil {
+		t.Fatalf("local source = %q, error = %v", got, err)
+	}
+	if err := verify(); err != nil {
+		t.Fatal(err)
 	}
 }

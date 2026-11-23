@@ -65,7 +65,10 @@ func newImageUpdates(cfg config.Config, root string, selection backend.Selection
 	platform := runtime.GOOS + "/" + runtime.GOARCH
 	u := &imageUpdates{channelFile: channelFile, path: filepath.Join(root, "image-channel", "state.json"), platform: platform, logger: logger,
 		enabled: !custom && cfg.Runner.ImageAutoUpdate != nil && *cfg.Runner.ImageAutoUpdate, rebuild: selection.PrepareImage}
-	if custom {
+	if localName, ok := strings.CutPrefix(cfg.VM.ImageRef, "local:"); ok && cfg.VM.Backend == "tart" {
+		// Keep the local recipe separate from rollback records of previously used sources.
+		u.path = filepath.Join(root, "image-channel", localName+"-state.json")
+	} else if custom {
 		u.path = filepath.Join(root, "image-channel", "custom-state.json")
 	}
 	managedCache := filepath.Join(root, "image-channel", "cache")

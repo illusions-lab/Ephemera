@@ -101,6 +101,14 @@ func TestTartConfigRequiresPinnedMacOSImage(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	cfg.VM.ImageRef = "local:github-macos26-0f142218-ac21-4c06-afb2-a725d7078f12"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("rejected local GitHub image: %v", err)
+	}
+	cfg.VM.ImageRef = "local:../../unmanaged"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("accepted unmanaged local image")
+	}
 	cfg.VM.ImageRef = "ghcr.io/example/macos:latest"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("accepted a mutable tag")

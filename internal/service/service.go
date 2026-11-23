@@ -81,6 +81,7 @@ func run(ctx context.Context, opts Options, logger *slog.Logger,
 	current.Scope, current.ScaleSet = cfg.GitHub.ScopeURL, cfg.GitHub.ScaleSetName
 	current.MaxConcurrent = cfg.Runner.MaxConcurrent
 	current.Backend = cfg.VM.Backend
+	current.ImageSource = cfg.VM.ImageRef
 	if cfg.Runner.Execute && opts.Claim {
 		return errors.New("runner.execute cannot be combined with --claim")
 	}

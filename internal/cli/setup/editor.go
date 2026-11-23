@@ -242,7 +242,7 @@ func editVM(cfg *config.Config) error {
 	}
 	if vm.Backend == "tart" {
 		fields = append(fields,
-			huh.NewInput().Title("Tart image reference (OCI SHA-256 digest)").Value(&vm.ImageRef),
+			huh.NewInput().Title("Tart image reference (local GitHub build or pinned OCI digest)").Value(&vm.ImageRef),
 			huh.NewSelect[string]().Title("Verify Apple toolchain in the VM").Options(
 				huh.NewOption("No Xcode check", ""), huh.NewOption("Xcode and macOS SDK", "macos"),
 				huh.NewOption("Xcode, macOS SDK, and iOS device SDK", "ios"),
