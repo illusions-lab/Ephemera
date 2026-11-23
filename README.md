@@ -37,6 +37,16 @@ sudo ephe doctor
 
 My own host is an M2 Mac mini with 8 GB. Mac prices made that decision for me. It runs my jobs, and macOS still makes an awkward server.
 
+**Xcode is required for macOS and iOS build jobs.** The task VM must contain
+the full Apple Xcode application and the SDKs your build needs. If you are
+building the image by copying Xcode from the host, first install the required
+version of [Apple Xcode](https://developer.apple.com/xcode/resources) on the
+host, then run the installer with `--host-xcode auto` or
+`--host-xcode /path/to/Xcode.app` to check it before activation.
+See the [Xcode image preparation steps](packaging/macos/official-runner-image-trial.md#trial-with-an-installed-apple-xcode)
+for copying it into and validating it inside the VM. An existing, verified
+image with Xcode can be used without installing Xcode on the host.
+
 Open Terminal as the account that will run Ephemera. The latest public release may lack a macOS bundle. If its assets do not include `install-macos.sh`, [install a candidate from source](#install-a-candidate-from-source).
 
 ```sh
