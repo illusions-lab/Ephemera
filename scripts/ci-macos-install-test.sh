@@ -168,6 +168,16 @@ install() {
   scripts/install-macos.sh --bundle "$box/bundle-$1" --non-interactive \
     --config "$box/$2.yaml" --github-app-key "$box/${3:-$2}.pem"
 }
+if scripts/install-macos.sh --bundle "$box/bundle-a" --non-interactive \
+    --config "$box/first.yaml" --github-app-key "$box/first.pem" \
+    --host-xcode "$box/missing Xcode.app" --xcode-version 27.2 --xcode-build 27B52 \
+    >"$box/xcode-preflight.log" 2>&1; then
+  echo 'installer accepted a missing host Xcode' >&2
+  exit 1
+fi
+grep -F 'install full Xcode from Apple' "$box/xcode-preflight.log"
+[[ ! -L "$root/current" && ! -e "$root/config.yaml" ]]
+
 touch "$root/dev-loaded"
 if install a first; then exit 1; fi
 [[ ! -L "$root/current" ]]

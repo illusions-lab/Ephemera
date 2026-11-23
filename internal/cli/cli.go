@@ -60,6 +60,8 @@ func Run(args []string) error {
 		return runSetup(args[1:])
 	case len(args) >= 2 && args[0] == "image" && args[1] == "prepare":
 		return prepareImage(args[2:])
+	case len(args) >= 2 && args[0] == "image" && args[1] == "check-host-xcode":
+		return checkHostXcode(args[2:])
 	case args[0] == "config":
 		return runConfig(args[1:])
 	default:

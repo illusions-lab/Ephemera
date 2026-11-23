@@ -97,6 +97,32 @@ bundled image channel for that configuration. Confirm the active
 configuration, run a real job and verify its image before retiring older
 third-party templates.
 
+### Trial with an installed Apple Xcode
+
+When the build will use Xcode already installed on its host, add
+`--host-xcode auto` or `--host-xcode /Applications/Xcode.app` to the
+Ephemera macOS installer. This preflight prints the installed version and
+build and stops before activation if it cannot verify a complete Apple
+Xcode installation. Pass `--xcode-version` and `--xcode-build` when the trial
+requires an exact version. Existing verified images can be installed without
+this option.
+
+Start a disposable `xcode-trial-*` macOS VM in a separate Tart home with a
+working guest agent and non-interactive sudo. With the intended Apple Xcode
+version and build, run the copy step as part of preparing the VM.
+
+```sh
+ephe image check-host-xcode --version 27.2 --build 27B52
+TART_HOME="$TRIAL_TART_HOME" bash scripts/copy-host-xcode-to-tart.sh xcode-trial-27 27.2 27B52
+```
+
+The copy streams the verified bundle to guest storage, verifies its signature
+and build there, runs first-launch provisioning, and checks that both SDK
+paths exist. It leaves a standalone installation at `/Applications/Xcode.app`
+inside the guest. The trial is suitable for testing Apple build compatibility.
+The full GitHub image recipe still validates its own complete toolset and
+archive checksums before it records a GitHub build receipt.
+
 ## Ubuntu ARM64 under the same Mac
 
 Use GitHub's [Ubuntu 24.04 ARM64 20261116.188 release](https://github.com/actions/runner-images/releases/tag/ubuntu24-arm64/20261116.188)

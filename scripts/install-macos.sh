@@ -53,20 +53,21 @@ install_cli_links() {
 }
 
 install_mac() {
-  local version='' bundle='' config='' key='' app_name='' online=false
+  local version='' bundle='' config='' key='' app_name='' host_xcode='' xcode_version='' xcode_build='' online=false
   local automatic=false existing_app=false target identity digest archive name tart entry path
   while (($#)); do
     case "$1" in
-      --version|--bundle|--config|--github-app-key|--app-name)
+      --version|--bundle|--config|--github-app-key|--app-name|--host-xcode|--xcode-version|--xcode-build)
         [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || die "$1 requires a value"
         case "$1" in
           --version) version=$2 ;; --bundle) bundle=$2 ;; --config) config=$2 ;;
-          --github-app-key) key=$2 ;; --app-name) app_name=$2 ;;
+          --github-app-key) key=$2 ;; --app-name) app_name=$2 ;; --host-xcode) host_xcode=$2 ;;
+          --xcode-version) xcode_version=$2 ;; --xcode-build) xcode_build=$2 ;;
         esac
         shift 2 ;;
       --non-interactive) automatic=true; shift ;;
       --existing-app) existing_app=true; shift ;;
-      --help|-h) printf 'Usage: install-macos.sh [--version TAG | --bundle DIR] [--existing-app | --app-name NAME | --non-interactive --config FILE --github-app-key FILE]\n'; return ;;
+      --help|-h) printf 'Usage: install-macos.sh [--version TAG | --bundle DIR] [--host-xcode auto|PATH [--xcode-version VERSION] [--xcode-build BUILD]] [--existing-app | --app-name NAME | --non-interactive --config FILE --github-app-key FILE]\n'; return ;;
       *) die "unknown option: $1" ;;
     esac
   done
@@ -78,6 +79,7 @@ install_mac() {
     [[ -z "$config$key" ]] || die 'input files require --non-interactive'
     [[ "$existing_app" == false || -z "$app_name" ]] || die 'choose either --existing-app or --app-name'
   fi
+  [[ -n "$host_xcode" || -z "$xcode_version$xcode_build" ]] || die 'Xcode version and build checks require --host-xcode'
   printf 'Current: '
   if [[ -x "$root/current/ephemera" ]]; then
     "$root/current/ephemera" version || printf 'unavailable\n'
@@ -126,6 +128,10 @@ install_mac() {
   if ! cmp "$work/candidate/tart-manifest.tsv" "$work/cli-manifest" ||
      ! cmp "$work/candidate/tart-manifest.tsv" "$work/daemon-manifest"; then
     die 'Tart manifest does not match the candidate binaries'
+  fi
+  if [[ -n "$host_xcode" ]]; then
+    "$work/candidate/ephemera" image check-host-xcode --path "$host_xcode" \
+      --version "$xcode_version" --build "$xcode_build"
   fi
   stage_tart "$work/candidate/tart-manifest.tsv" "$online"
   entry=$({

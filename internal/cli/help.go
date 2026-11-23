@@ -2,7 +2,7 @@ package cli
 
 import "fmt"
 
-const usage = "usage: ephe <service | status | ps | doctor | setup | config | image prepare | version | update | help>"
+const usage = "usage: ephe <service | status | ps | doctor | setup | config | image | version | update | help>"
 
 func printHelp() {
 	fmt.Println(usage)
@@ -18,6 +18,7 @@ func printHelp() {
 	fmt.Println("  config apply     Apply saved configuration after active jobs finish")
 	fmt.Println("  config validate  Validate the saved configuration")
 	fmt.Println("  image prepare    Build or verify the configured runner image")
+	fmt.Println("  image check-host-xcode  Verify an Apple Xcode installation for Tart image builds")
 	fmt.Println("  help             Show this help")
 	fmt.Println()
 	fmt.Println("Use --help after a command to see its options.")
