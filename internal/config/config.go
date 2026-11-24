@@ -67,6 +67,7 @@ type Config struct {
 		HostReserveMiB         int    `yaml:"host_reserve_mib,omitempty"`
 		HostDiskReserveGiB     int    `yaml:"host_disk_reserve_gib,omitempty"`
 		CacheMaxGiB            int    `yaml:"cache_max_gib,omitempty"`
+		PruneOnDiskPressure    bool   `yaml:"prune_on_disk_pressure,omitempty"`
 		ExtraRetainedImages    int    `yaml:"extra_retained_images,omitempty"`
 		DataDir                string `yaml:"data_dir,omitempty"`
 		ImageCacheDir          string `yaml:"image_cache_dir,omitempty"`

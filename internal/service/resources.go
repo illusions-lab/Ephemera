@@ -52,8 +52,7 @@ func (b *resourceBudget) slots(ctx context.Context, now time.Time, starting int,
 		memory += b.memoryCredit
 	}
 	memSlots := memory / b.memory
-	diskReserve := b.reservedDisk()
-	diskSlots := (max(diskReserve, b.availableDisk) - diskReserve) / b.disk
+	diskSlots := b.diskSlots(b.availableDisk)
 	committed := uint64(starting)
 	free := min(memSlots, diskSlots)
 	reason := ""
@@ -61,10 +60,19 @@ func (b *resourceBudget) slots(ctx context.Context, now time.Time, starting int,
 		if memSlots <= diskSlots {
 			reason = fmt.Sprintf("available memory after the %d MiB host reserve and pending VM starts", reserve>>20)
 		} else {
-			reason = fmt.Sprintf("available VM disk space after the %d GiB host reserve and pending VM starts", diskReserve/gib)
+			reason = b.diskCapacityReason()
 		}
 	}
 	return int(min(uint64(maxSlots), max(free, committed)-committed)), reason
+}
+
+func (b *resourceBudget) diskSlots(available uint64) uint64 {
+	reserve := b.reservedDisk()
+	return (max(reserve, available) - reserve) / b.disk
+}
+
+func (b *resourceBudget) diskCapacityReason() string {
+	return fmt.Sprintf("available VM disk space after the %d GiB host reserve and pending VM starts", b.reservedDisk()/gib)
 }
 
 func (b *resourceBudget) reserve() uint64 {

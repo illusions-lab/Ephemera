@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/illusions-lab/Ephemera/internal/backend"
@@ -56,6 +57,10 @@ type imageUpdates struct {
 	managed            func(string) bool
 	manualSource       string
 	pruneSource        func(context.Context, string) error
+	checkSource        func(context.Context, string) error
+	imagePath          func(string) string
+	pruneOnPressure    bool
+	preparing          sync.Mutex
 	imageBytes         func(string) (uint64, error)
 	cacheMax           uint64
 	extraRetained      int
@@ -69,7 +74,7 @@ func newImageUpdates(cfg config.Config, root string, selection backend.Selection
 	}
 	platform := runtime.GOOS + "/" + runtime.GOARCH
 	u := &imageUpdates{channelFile: channelFile, path: filepath.Join(root, "image-channel", "state.json"), platform: platform, logger: logger,
-		enabled: !custom && cfg.Runner.ImageAutoUpdate != nil && *cfg.Runner.ImageAutoUpdate, rebuild: selection.PrepareImage, cacheMax: uint64(cfg.VM.CacheMaxGiB) * gib, extraRetained: cfg.VM.ExtraRetainedImages}
+		enabled: !custom && cfg.Runner.ImageAutoUpdate != nil && *cfg.Runner.ImageAutoUpdate, rebuild: selection.PrepareImage, cacheMax: uint64(cfg.VM.CacheMaxGiB) * gib, extraRetained: cfg.VM.ExtraRetainedImages, pruneOnPressure: cfg.VM.PruneOnDiskPressure}
 	if localName, ok := strings.CutPrefix(cfg.VM.ImageRef, "local:"); ok && cfg.VM.Backend == "tart" {
 		// Keep the local recipe separate from rollback records of previously used sources.
 		u.path = filepath.Join(root, "image-channel", localName+"-state.json")
@@ -85,9 +90,8 @@ func newImageUpdates(cfg config.Config, root string, selection backend.Selection
 		u.managed = func(id string) bool { return strings.HasPrefix(id, "ephemera-base-") }
 		u.prune = tart.RemoveCachedImage
 		u.pruneSource = tart.RemoveCachedSource
-		u.imageBytes = func(id string) (uint64, error) {
-			return allocatedImageBytes(filepath.Join(tart.StoragePath(), "vms", id))
-		}
+		u.checkSource = tart.CheckImage
+		u.imagePath = func(id string) string { return filepath.Join(tart.StoragePath(), "vms", id) }
 	} else {
 		keyedDirectory := regexp.MustCompile(`^ubuntu-(amd64|arm64)-[a-f0-9]{64}(\.repair-[0-9]+)?$`)
 		u.managed = func(id string) bool {
@@ -96,7 +100,7 @@ func newImageUpdates(cfg config.Config, root string, selection backend.Selection
 			owned := cache == managedCache || !custom && slices.Contains(managedBaseline, cache)
 			return owned && filepath.Base(id) == "image.qcow2" && keyedDirectory.MatchString(filepath.Base(dir))
 		}
-		u.imageBytes = func(id string) (uint64, error) { return allocatedImageBytes(filepath.Dir(id)) }
+		u.imagePath = filepath.Dir
 		u.prune = func(_ context.Context, id string) error {
 			if !u.managed(id) {
 				return errors.New("refusing to remove unmanaged image")
@@ -104,6 +108,7 @@ func newImageUpdates(cfg config.Config, root string, selection backend.Selection
 			return os.RemoveAll(filepath.Dir(id))
 		}
 	}
+	u.imageBytes = func(id string) (uint64, error) { return allocatedImageBytes(u.imagePath(id)) }
 	u.prepare = func(ctx context.Context, recipe imagechannel.Recipe, smoke bool) (preparedImage, error) {
 		if err := recipe.Validate(platform, version.Version); err != nil {
 			return preparedImage{}, err
@@ -246,6 +251,7 @@ func (u *imageUpdates) watch(ctx context.Context, r *reconciler, start updateSta
 		checked := time.Now()
 		manifest, err := u.fetch(ctx)
 		var candidate preparedImage
+		u.preparing.Lock()
 		if err == nil {
 			recipe, ok := manifest.Images[u.platform]
 			if ok && recipe.Revision > start.Highest && !rejected(start, recipe) {
@@ -258,12 +264,15 @@ func (u *imageUpdates) watch(ctx context.Context, r *reconciler, start updateSta
 		}
 		reply := make(chan updateState, 1)
 		if r.send(ctx, runnerEvent{kind: imageChecked, image: candidate, err: err, checked: checked, imageReply: reply}) != nil {
+			u.preparing.Unlock()
 			return
 		}
 		select {
 		case <-ctx.Done():
+			u.preparing.Unlock()
 			return
 		case start = <-reply:
+			u.preparing.Unlock()
 		}
 		if err != nil {
 			failures++
@@ -337,23 +346,19 @@ func (r *reconciler) retire(state *updateState, previous preparedImage) {
 	}
 }
 
-func (r *reconciler) pruneImages() {
+func (r *reconciler) pruneImages(needsDisk imageDiskPressure) {
 	u := r.images
-	if u.prune == nil || len(u.state.Retired) == 0 {
+	if u.prune == nil {
 		return
 	}
 	next := u.state
 	next.Retired = nil
 	retained := u.retainExtra(u.state.Retired, r.template.Image, u.previous.id, u.baseline.id)
 	for _, id := range u.state.Retired {
-		keep := retained[id] || id == r.template.Image || id == u.previous.id || id == u.baseline.id
-		for _, instance := range r.instances {
-			keep = keep || !instance.LocalReclaimed && instance.Image == id
-		}
+		keep := id == u.previous.id || id == u.baseline.id || r.imageInUse(id) ||
+			retained[id] && !needsDisk.forImage(id)
 		if !keep {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			err := u.prune(ctx, id)
-			cancel()
+			err := u.removePrepared(id)
 			if err != nil {
 				u.logger.Warn("Remove obsolete runner image", "error", err)
 				keep = true
@@ -368,13 +373,37 @@ func (r *reconciler) pruneImages() {
 			u.logger.Error("Persist image cleanup", "error", err)
 		}
 	}
+	previous := u.previous
+	if previous.recipe == nil || previous.id == u.baseline.id || r.imageInUse(previous.id) ||
+		!needsDisk.forImage(previous.id) {
+		return
+	}
+	// Record the loss of this rollback before deleting its disk. The bundled
+	// baseline remains available, including after a daemon restart.
+	next = u.state
+	next.Previous = nil
+	r.retire(&next, previous)
+	if err := u.save(next); err != nil {
+		u.logger.Error("Retire rollback image under disk pressure", "error", err)
+		return
+	}
+	u.previous = u.baseline
+	u.logger.Info("Reclaim rollback image under disk pressure", "image", previous.id)
+	if err := u.removePrepared(previous.id); err != nil {
+		u.logger.Warn("Remove rollback image", "image", previous.id, "error", err)
+		return
+	}
+	next.Retired = slices.DeleteFunc(slices.Clone(next.Retired), func(id string) bool { return id == previous.id })
+	if err := u.save(next); err != nil {
+		u.logger.Error("Persist rollback image cleanup", "error", err)
+	}
 }
 
 func (r *reconciler) imageChecked(event runnerEvent) {
 	u := r.images
 	defer func() {
 		if !r.draining {
-			r.pruneImages()
+			r.pruneImages(nil)
 		}
 		event.imageReply <- u.state
 	}()

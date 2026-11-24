@@ -76,6 +76,7 @@ func configureFirstRun(path, appName string, existingApp, systemSetup bool, cfg 
 	// First-run setup enables image updates by default and lets the user opt out.
 	enabled := true
 	cfg.Runner.ImageAutoUpdate = &enabled
+	cfg.VM.PruneOnDiskPressure = true
 	if err := editVM(&cfg); err != nil {
 		return err
 	}

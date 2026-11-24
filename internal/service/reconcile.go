@@ -396,6 +396,8 @@ func (r *reconciler) reconcile(ctx context.Context, now time.Time) (int, status.
 	}
 	free, startable := 0, 0
 	capacityReason := r.imageReason
+	prune := r.images != nil && !r.draining && !manual && now.After(r.nextPrune)
+	var needsDisk imageDiskPressure
 	if r.connected && !r.draining && !manual && !r.imageBlocked.Load() && !hasRecovery(r.instances) {
 		local := r.localInstances()
 		startingCount := 0
@@ -406,6 +408,14 @@ func (r *reconciler) reconcile(ctx context.Context, now time.Time) (int, status.
 		}
 		slots, reason := r.budget.slots(ctx, now, startingCount, max(0, r.limit-local))
 		capacityReason = reason
+		if prune && r.images.pruneOnPressure && slots == 0 && r.budget != nil &&
+			reason == r.budget.diskCapacityReason() && !now.Before(r.retryStart) &&
+			(r.update.AvailableJobs > 0 || local < r.update.TargetRunners) {
+			if r.images.preparing.TryLock() {
+				defer r.images.preparing.Unlock()
+				needsDisk = r.imageDiskPressure(startingCount)
+			}
+		}
 		if now.Before(r.retryStart) {
 			slots = 0
 			capacityReason = "VM startup is backing off after a failure"
@@ -455,10 +465,10 @@ func (r *reconciler) reconcile(ctx context.Context, now time.Time) (int, status.
 			counts.Reclaiming++
 		}
 	}
-	if r.images != nil && !r.draining && !manual && now.After(r.nextPrune) {
+	if prune {
 		r.nextPrune = now.Add(30 * time.Second)
-		r.pruneImages()
-		r.pruneManualTartImages()
+		r.pruneImages(needsDisk)
+		r.pruneManualTartImages(needsDisk)
 	}
 	return free, counts
 }

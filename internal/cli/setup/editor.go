@@ -255,6 +255,9 @@ func editVM(cfg *config.Config) error {
 			Value(&memoryCredit).Validate(intRange(0, 4096)),
 		huh.NewInput().Title("Host disk reserve (GiB, 0 uses 5)").Value(&diskReserve).Validate(intRange(0, math.MaxInt32)),
 		huh.NewInput().Title("Image cache budget (GiB, 0 means unlimited)").Value(&cacheMax).Validate(intRange(0, math.MaxInt32)),
+		huh.NewConfirm().Title("Automatically clean up old images when host disk space is low?").
+			Description("This can remove a recoverable rollback image. Active and in-use images are protected.").
+			Value(&vm.PruneOnDiskPressure),
 		huh.NewInput().Title("Extra retired images to retain").Value(&retained).Validate(intRange(0, 100)),
 		huh.NewSelect[string]().Title("Automatic runner image updates").Options(
 			huh.NewOption("Use default (enabled for new installations)", "default"), huh.NewOption("Enabled", "true"), huh.NewOption("Disabled", "false"),
