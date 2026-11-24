@@ -62,7 +62,8 @@ case "$2" in
   -i)
     touch "$TART_HOME/runner-invoked"
     test "$3" = ephemera-fixture
-    test "$4 $5 $6 $7" = "/usr/bin/sudo -n -u ephemera-runner"
+    test "$#" = 10
+    test "$4 $5 $6 $7 $8 $9" = "/usr/bin/sudo -n /usr/bin/su -l ephemera-runner -c"
     case "$*" in *synthetic-jit*) exit 1 ;; esac
     if env | grep -q synthetic-jit; then exit 1; fi
     IFS= read -r credential
