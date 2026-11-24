@@ -34,6 +34,7 @@ vm:
   # memory_oversubscribe_mib: 0
   # data_dir: /mnt/ephemera-vms
   # image_cache_dir: /mnt/ephemera-cache  # QEMU only
+  # prune_on_disk_pressure: true  # Allow reclaiming recoverable old images to start queued jobs.
   # extra_retained_images: 0
   # cache_max_gib: 0  # Soft budget for additional retention; 0 disables the size limit.
 

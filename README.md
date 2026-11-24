@@ -101,7 +101,14 @@ resource, including reservations for VMs that are starting.
 | `vm.data_dir` | Absolute path for VM resources. Tart keeps its local images and cache in this directory as well. On QEMU, recovery records stay in the standard state directory. |
 | `vm.image_cache_dir` | Separate absolute path for the QEMU image cache. |
 | `vm.extra_retained_images` | Number of additional retired images to keep beyond the active and rollback images. Defaults to zero. |
+| `vm.prune_on_disk_pressure` | Automatically reclaim eligible old images when queued work cannot start because the VM filesystem lacks space. The first-run wizard asks and defaults to Yes. Existing and manually configured installations opt in with `true`. |
 | `vm.cache_max_gib` | Optional soft size budget for prepared images. It limits extra retention and preserves active, rollback and in-use images even if they exceed the budget. Zero means unlimited extra retention by size. |
+
+Under disk pressure, Ephemera tries the oldest retired prepared images first and
+checks actual free space between removals. If more space is needed, it can evict
+the previous prepared image if it can be rebuilt. Active images, images used by
+VMs, the bundled fallback, and local Tart sources are protected. A prepared cache
+on a different filesystem cannot free space for a pending VM start.
 
 Create custom storage directories with mode `0700` under the Ephemera service
 account before applying. Images are prepared in the new location. A local Tart

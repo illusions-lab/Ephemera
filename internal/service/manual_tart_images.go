@@ -37,17 +37,17 @@ func (l *tartImageLedger) record(image tartImageUse) bool {
 
 // Track committed configurations only. A candidate can report healthy while
 // its installer still owns the activation journal and may need to roll back.
-func (r *reconciler) pruneManualTartImages() {
+func (r *reconciler) pruneManualTartImages(needsDisk imageDiskPressure) {
 	u := r.images
 	if u.manualSource == "" || u.baseline.id == "" || !r.connected {
 		return
 	}
-	if err := macos.WithInactiveActivation(r.pruneCommittedTartImages); err != nil {
+	if err := macos.WithInactiveActivation(func() { r.pruneCommittedTartImages(needsDisk) }); err != nil {
 		u.logger.Warn("Check Tart image retention", "error", err)
 	}
 }
 
-func (r *reconciler) pruneCommittedTartImages() {
+func (r *reconciler) pruneCommittedTartImages(needsDisk imageDiskPressure) {
 	u := r.images
 	path := filepath.Join(filepath.Dir(u.path), "manual-tart-images.json")
 	var ledger tartImageLedger
@@ -81,7 +81,7 @@ func (r *reconciler) pruneCommittedTartImages() {
 		}
 	}
 	for _, image := range ledger.Retired {
-		if retained[image.Prepared] {
+		if retained[image.Prepared] && !needsDisk.forImage(image.Prepared) {
 			remaining = append(remaining, image)
 			continue
 		}
@@ -93,6 +93,24 @@ func (r *reconciler) pruneCommittedTartImages() {
 			remaining = append(remaining, image)
 		}
 	}
+	previous := ledger.Previous
+	if previous.Source != "" && previous.Prepared != ledger.Current.Prepared && !r.imageInUse(previous.Prepared) &&
+		previous.Prepared != u.previous.id && needsDisk.forImage(previous.Prepared) && u.hasTartSource(previous.Source) {
+		ledger.Previous = tartImageUse{}
+		ledger.Retired = append(remaining, previous)
+		if err := save(); err != nil {
+			u.logger.Warn("Retire Tart rollback image under disk pressure", "error", err)
+			return
+		}
+		u.logger.Info("Reclaim Tart rollback image under disk pressure", "image", previous.Prepared)
+		removed, err := r.removeRetiredTartImage(ledger, previous, true)
+		if err != nil {
+			u.logger.Warn("Remove Tart rollback image", "error", err)
+		}
+		if !removed {
+			return
+		}
+	}
 	if len(remaining) != len(ledger.Retired) {
 		ledger.Retired = remaining
 		if err := save(); err != nil {
@@ -101,18 +119,23 @@ func (r *reconciler) pruneCommittedTartImages() {
 	}
 }
 
+func (u *imageUpdates) hasTartSource(ref string) bool {
+	if u.checkSource == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return u.checkSource(ctx, ref) == nil
+}
+
 func (r *reconciler) removeRetiredTartImage(ledger tartImageLedger, image tartImageUse, keepSource bool) (bool, error) {
 	u := r.images
 	if image == ledger.Current || image == ledger.Previous {
 		return true, nil
 	}
-	if image.Prepared == r.template.Image || image.Prepared == u.previous.id {
+	if image.Prepared == ledger.Current.Prepared || image.Prepared == ledger.Previous.Prepared ||
+		image.Prepared == u.previous.id || r.imageInUse(image.Prepared) {
 		return false, nil
-	}
-	for _, instance := range r.instances {
-		if !instance.LocalReclaimed && instance.Image == image.Prepared {
-			return false, nil
-		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
