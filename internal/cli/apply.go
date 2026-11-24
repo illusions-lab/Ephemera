@@ -142,6 +142,7 @@ func confirmConfigCandidate(ctx context.Context, candidate configCandidate, oldP
 	fmt.Printf("Target %s · %s · runner group %s\n%s · up to %d runners\nRequested labels %s\n",
 		cfg.GitHub.ScopeURL, cfg.GitHub.ScaleSetName, cfg.RunnerGroup(), mode, cfg.Runner.MaxConcurrent,
 		strings.Join(append([]string{cfg.GitHub.ScaleSetName}, cfg.ScaleSetLabels()...), ", "))
+	fmt.Println(setup.CapacityPreview(cfg))
 	if yes {
 		return true, nil
 	}
@@ -159,7 +160,7 @@ func checkConfigRecovery(candidate config.Config, activePath string) error {
 	active, err := config.Load(activePath)
 	if err == nil && active.GitHub.ScopeURL == candidate.GitHub.ScopeURL &&
 		active.GitHub.ScaleSetName == candidate.GitHub.ScaleSetName && active.RunnerGroup() == candidate.RunnerGroup() &&
-		active.VM.Backend == candidate.VM.Backend {
+		active.VM.Backend == candidate.VM.Backend && active.VMDataPath(host.StateDir()) == candidate.VMDataPath(host.StateDir()) {
 		return nil
 	}
 	records, err := filepath.Glob(filepath.Join(host.StateDir(), "*.json"))

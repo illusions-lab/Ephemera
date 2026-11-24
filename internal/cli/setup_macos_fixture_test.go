@@ -114,7 +114,7 @@ func runDaemonFixture(args []string) error {
 	if _, err := config.ReadKey(*key); err != nil {
 		return err
 	}
-	tart, err := vm.NewTart(filepath.Join(macos.StateDir(), "tart"), cfg.VM.VCPUs, cfg.VM.MemoryMiB)
+	tart, err := vm.NewTart(cfg.VMDataPath(macos.StateDir()), cfg.VM.VCPUs, cfg.VM.MemoryMiB, cfg.VM.DiskGiB)
 	if err != nil {
 		return err
 	}

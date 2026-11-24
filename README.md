@@ -86,6 +86,28 @@ that threshold, set `vm.host_reserve_mib` in **VM and images** under `ephe confi
 then run `ephe config apply`. The minimum is 256 MiB. Reduce the reserve only
 if the host can run the configured VM and its workloads with that headroom.
 
+### VM resources and storage
+
+The setup wizard and **VM and images** in `ephe config` show an estimated runner
+capacity before saving. The estimate uses the host's total memory and current
+disk space. After apply, `ephe status` shows runtime capacity and the limiting
+resource, including reservations for VMs that are starting.
+
+| Setting | Behavior |
+| --- | --- |
+| `vm.disk_gib` | QEMU defaults to 12 GiB. Tart defaults to the image size. An explicit Tart size grows a disposable preparation clone, verifies the APFS data volume, and leaves the source image intact. Use a compatible pre-sized image if APFS cannot grow with its existing recovery layout. |
+| `vm.host_disk_reserve_gib` | Disk space kept free on the VM data filesystem. The default is 5 GiB. |
+| `vm.memory_oversubscribe_mib` | Optional extra memory admission budget, disabled by default. With it enabled, new launches pause when the host reports elevated pressure or pressure cannot be read. Guest minimum memory and vCPU requirements still apply. |
+| `vm.data_dir` | Absolute path for VM resources. Tart keeps its local images and cache in this directory as well. On QEMU, recovery records stay in the standard state directory. |
+| `vm.image_cache_dir` | Separate absolute path for the QEMU image cache. |
+| `vm.extra_retained_images` | Number of additional retired images to keep beyond the active and rollback images. Defaults to zero. |
+| `vm.cache_max_gib` | Optional soft size budget for prepared images. It limits extra retention and preserves active, rollback and in-use images even if they exceed the budget. Zero means unlimited extra retention by size. |
+
+Create custom storage directories with mode `0700` under the Ephemera service
+account before applying. Images are prepared in the new location. A local Tart
+source and its verification receipt must already be in the selected Tart home.
+Existing images and VM data are not migrated automatically.
+
 After applying routing changes, Ephemera reads the registered labels back
 from GitHub. If GitHub still omits a label after reapplying, choose a new Scale
 Set name in `ephe config` and apply it. The old Scale Set stays registered.
@@ -253,7 +275,7 @@ sudo apt install qemu-system-x86 qemu-utils guestfs-tools cloud-image-utils
 sudo apt install qemu-system-arm qemu-efi-aarch64 qemu-utils guestfs-tools cloud-image-utils
 ```
 
-Run `sudo ephe image prepare` to build or verify the selected image. Linux caches validated disks under `/var/lib/ephemera/image` and uses copy-on-write overlays for jobs. Set `vm.disk_gib` to change the QEMU guest disk size from 12 GiB. Tart execution prepares a local base with a verified runner before activation, and job VMs clone that base. To change source pins, update `image.ubuntu.amd64` or `image.ubuntu.arm64` in the [example configuration](configs/ephemera.example.yaml). If libguestfs stalls on a nested host, try `LIBGUESTFS_BACKEND_SETTINGS=force_tcg` for image preparation. Job execution still requires KVM.
+Run `sudo ephe image prepare` to build or verify the selected image. Linux caches validated disks under `/var/lib/ephemera/image` and uses copy-on-write overlays for jobs. See [VM resources and storage](#vm-resources-and-storage) to configure guest disk size. Tart execution prepares a local base with a verified runner before activation, and job VMs clone that base. To change source pins, update `image.ubuntu.amd64` or `image.ubuntu.arm64` in the [example configuration](configs/ephemera.example.yaml). If libguestfs stalls on a nested host, try `LIBGUESTFS_BACKEND_SETTINGS=force_tcg` for image preparation. Job execution still requires KVM.
 
 The Linux setup wizard maps the Ubuntu 24.04 catalog entries above to Ephemera's recipes. Use the [official image catalog](https://github.com/actions/runner-images#available-images) to look up tools preinstalled in GitHub's hosted images.
 

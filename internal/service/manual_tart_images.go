@@ -68,9 +68,24 @@ func (r *reconciler) pruneCommittedTartImages() {
 			return
 		}
 	}
-	remaining := ledger.Retired[:0]
+	remaining := make([]tartImageUse, 0, len(ledger.Retired))
+	candidates := make([]string, 0, len(ledger.Retired))
 	for _, image := range ledger.Retired {
-		removed, err := r.removeRetiredTartImage(ledger, image)
+		candidates = append(candidates, image.Prepared)
+	}
+	retained := u.retainExtra(candidates, ledger.Current.Prepared, ledger.Previous.Prepared)
+	keptSources := make(map[string]bool)
+	for _, image := range ledger.Retired {
+		if retained[image.Prepared] {
+			keptSources[image.Source] = true
+		}
+	}
+	for _, image := range ledger.Retired {
+		if retained[image.Prepared] {
+			remaining = append(remaining, image)
+			continue
+		}
+		removed, err := r.removeRetiredTartImage(ledger, image, keptSources[image.Source])
 		if err != nil {
 			u.logger.Warn("Remove retired Tart image", "image", image.Prepared, "error", err)
 		}
@@ -86,7 +101,7 @@ func (r *reconciler) pruneCommittedTartImages() {
 	}
 }
 
-func (r *reconciler) removeRetiredTartImage(ledger tartImageLedger, image tartImageUse) (bool, error) {
+func (r *reconciler) removeRetiredTartImage(ledger tartImageLedger, image tartImageUse, keepSource bool) (bool, error) {
 	u := r.images
 	if image == ledger.Current || image == ledger.Previous {
 		return true, nil
@@ -104,7 +119,7 @@ func (r *reconciler) removeRetiredTartImage(ledger tartImageLedger, image tartIm
 	if err := u.prune(ctx, image.Prepared); err != nil {
 		return false, err
 	}
-	if image.Source == ledger.Current.Source || image.Source == ledger.Previous.Source {
+	if keepSource || image.Source == ledger.Current.Source || image.Source == ledger.Previous.Source {
 		return true, nil
 	}
 	for _, recipe := range []*imagechannel.Recipe{u.state.Current, u.state.Previous} {

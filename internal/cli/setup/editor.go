@@ -89,7 +89,7 @@ func Edit(path string) error {
 				break
 			}
 			fmt.Println(changes)
-			save, confirmErr := confirmSetup("Save these changes?", path)
+			save, confirmErr := confirmSetup("Save these changes?", path+"\n"+CapacityPreview(cfg))
 			if confirmErr != nil || !save {
 				err = confirmErr
 				break
@@ -222,6 +222,14 @@ func editVM(cfg *config.Config) error {
 	vm := cfg.VM
 	cpus, memory := strconv.Itoa(vm.VCPUs), strconv.Itoa(vm.MemoryMiB)
 	disk := strconv.Itoa(vm.DiskGiB)
+	diskReserve := strconv.Itoa(vm.HostDiskReserveGiB)
+	memoryCredit := strconv.Itoa(vm.MemoryOversubscribeMiB)
+	cacheMax := strconv.Itoa(vm.CacheMaxGiB)
+	retained := strconv.Itoa(vm.ExtraRetainedImages)
+	diskTitle := "Guest disk (GiB, 0 uses the default of 12)"
+	if vm.Backend == "tart" {
+		diskTitle = "Guest disk (GiB, 0 inherits the Tart image size)"
+	}
 	reserve := strconv.Itoa(vm.HostReserveMiB)
 	auto := "default"
 	if cfg.Runner.ImageAutoUpdate != nil {
@@ -236,6 +244,18 @@ func editVM(cfg *config.Config) error {
 			}
 			return intRange(256, math.MaxInt32)(value)
 		}),
+		huh.NewInput().Title("VM data directory (absolute path; blank uses default)").Value(&vm.DataDir),
+		huh.NewInput().Title(diskTitle).Value(&disk).Validate(func(value string) error {
+			if strings.TrimSpace(value) == "0" {
+				return nil
+			}
+			return intRange(12, 1024)(value)
+		}),
+		huh.NewInput().Title("Extra memory admission budget (MiB, 0 disables oversubscription)").
+			Value(&memoryCredit).Validate(intRange(0, 4096)),
+		huh.NewInput().Title("Host disk reserve (GiB, 0 uses 5)").Value(&diskReserve).Validate(intRange(0, math.MaxInt32)),
+		huh.NewInput().Title("Image cache budget (GiB, 0 means unlimited)").Value(&cacheMax).Validate(intRange(0, math.MaxInt32)),
+		huh.NewInput().Title("Extra retired images to retain").Value(&retained).Validate(intRange(0, 100)),
 		huh.NewSelect[string]().Title("Automatic runner image updates").Options(
 			huh.NewOption("Use default (enabled for new installations)", "default"), huh.NewOption("Enabled", "true"), huh.NewOption("Disabled", "false"),
 		).Value(&auto),
@@ -251,14 +271,9 @@ func editVM(cfg *config.Config) error {
 	} else {
 		fields = append(fields,
 			huh.NewInput().Title("Image tag").Value(&vm.Image).Validate(requiredInput),
+			huh.NewInput().Title("Image cache directory (absolute path; blank uses default)").Value(&vm.ImageCacheDir),
 			huh.NewInput().Title("Image architecture (amd64 or arm64)").Value(&vm.Arch),
 			huh.NewInput().Title("Image profile (optional, ubuntu-24.04)").Value(&vm.Profile),
-			huh.NewInput().Title("Guest disk (GiB, 0 uses the default of 12)").Value(&disk).Validate(func(value string) error {
-				if strings.TrimSpace(value) == "0" {
-					return nil
-				}
-				return intRange(12, 1024)(value)
-			}),
 		)
 	}
 	if err := huh.NewForm(huh.NewGroup(fields...)).Run(); err != nil {
@@ -268,6 +283,11 @@ func editVM(cfg *config.Config) error {
 	vm.MemoryMiB, _ = strconv.Atoi(strings.TrimSpace(memory))
 	vm.HostReserveMiB, _ = strconv.Atoi(strings.TrimSpace(reserve))
 	vm.DiskGiB, _ = strconv.Atoi(strings.TrimSpace(disk))
+	vm.HostDiskReserveGiB, _ = strconv.Atoi(strings.TrimSpace(diskReserve))
+	vm.MemoryOversubscribeMiB, _ = strconv.Atoi(strings.TrimSpace(memoryCredit))
+	vm.CacheMaxGiB, _ = strconv.Atoi(strings.TrimSpace(cacheMax))
+	vm.ExtraRetainedImages, _ = strconv.Atoi(strings.TrimSpace(retained))
+	vm.DataDir, vm.ImageCacheDir = strings.TrimSpace(vm.DataDir), strings.TrimSpace(vm.ImageCacheDir)
 	vm.Image, vm.Arch = strings.TrimSpace(vm.Image), strings.TrimSpace(vm.Arch)
 	vm.ImageRef, vm.Profile = strings.TrimSpace(vm.ImageRef), strings.TrimSpace(vm.Profile)
 	cfg.VM = vm

@@ -25,6 +25,7 @@ type Selection struct {
 }
 
 func Select(cfg config.Config, root, cache string, logger *slog.Logger, build ImageBuilder, claim bool) (Selection, error) {
+	cache = cfg.VMImageCachePath(cache)
 	switch cfg.VM.Backend {
 	case "tart":
 		if claim {
@@ -39,22 +40,32 @@ func Select(cfg config.Config, root, cache string, logger *slog.Logger, build Im
 		if err != nil {
 			return Selection{}, err
 		}
-		return Selection{VM: tart, Namespace: filepath.Join(root, "tart"), PrepareImage: func(ctx context.Context) (string, func() error, error) {
+		return Selection{VM: tart, Namespace: cfg.VMDataPath(root), PrepareImage: func(ctx context.Context) (string, func() error, error) {
 			return prepareTart(ctx, tart, root, cfg.VM.ImageRef, cfg.VM.AppleToolchain, true, nil)
 		}}, nil
 	case "qemu":
 		var qemu vm.Backend
+		dataDir := cfg.VMDataPath(root)
+		namespace := ""
+		if dataDir != root {
+			namespace = dataDir
+		}
 		if cfg.Runner.Execute {
 			if err := checkQEMUHost(runtime.GOOS, runtime.GOARCH, cfg.VM.Arch); err != nil {
 				return Selection{}, err
 			}
+			if cfg.VM.DataDir != "" {
+				if err := checkPrivateStorage(dataDir); err != nil {
+					return Selection{}, err
+				}
+			}
 			var err error
-			qemu, err = vm.NewQEMU(vm.QEMUConfig{Root: root, VCPUs: cfg.VM.VCPUs, MemoryMiB: cfg.VM.MemoryMiB})
+			qemu, err = vm.NewQEMU(vm.QEMUConfig{Root: dataDir, VCPUs: cfg.VM.VCPUs, MemoryMiB: cfg.VM.MemoryMiB})
 			if err != nil {
 				return Selection{}, err
 			}
 		}
-		return Selection{VM: qemu, PrepareImage: func(ctx context.Context) (string, func() error, error) {
+		return Selection{VM: qemu, Namespace: namespace, PrepareImage: func(ctx context.Context) (string, func() error, error) {
 			if qemu != nil {
 				if err := qemu.Check(ctx); err != nil {
 					return "", nil, fmt.Errorf("check QEMU backend: %w", err)
@@ -73,6 +84,11 @@ func BuildImage(ctx context.Context, cache string, cfg image.Config, logger *slo
 }
 
 func prepareQEMU(ctx context.Context, cfg config.Config, cache string, logger *slog.Logger, build ImageBuilder) (string, func() error, error) {
+	if cfg.VM.ImageCacheDir != "" {
+		if err := checkPrivateStorage(cache); err != nil {
+			return "", nil, err
+		}
+	}
 	imageCfg, err := cfg.ImageConfig()
 	if err != nil {
 		return "", nil, err
@@ -86,7 +102,12 @@ func prepareQEMU(ctx context.Context, cfg config.Config, cache string, logger *s
 }
 
 func newTart(cfg config.Config, root string) (*vm.Tart, error) {
-	return vm.NewTart(filepath.Join(root, "tart"), cfg.VM.VCPUs, cfg.VM.MemoryMiB)
+	if cfg.VM.DataDir != "" {
+		if err := checkPrivateStorage(cfg.VM.DataDir); err != nil {
+			return nil, err
+		}
+	}
+	return vm.NewTart(cfg.VMDataPath(root), cfg.VM.VCPUs, cfg.VM.MemoryMiB, cfg.VM.DiskGiB)
 }
 
 func prepareTart(ctx context.Context, tart *vm.Tart, root, ref, toolchain string, execute bool, progress io.Writer) (string, func() error, error) {
@@ -105,6 +126,7 @@ func prepareTart(ctx context.Context, tart *vm.Tart, root, ref, toolchain string
 // PrepareImage explicitly prepares and verifies the configured image. Tart
 // observation skips preparation in the daemon, while an explicit request pulls it.
 func PrepareImage(ctx context.Context, cfg config.Config, root, cache string, logger *slog.Logger, progress io.Writer) (string, error) {
+	cache = cfg.VMImageCachePath(cache)
 	var id string
 	var verify func() error
 	var err error
@@ -135,7 +157,7 @@ func CheckImage(ctx context.Context, cfg config.Config, root, cache string) (str
 		if err != nil {
 			return "", err
 		}
-		cached, err := image.CheckCached(ctx, cache, imageCfg)
+		cached, err := image.CheckCached(ctx, cfg.VMImageCachePath(cache), imageCfg)
 		return cached.Path, err
 	case "tart":
 		tart, err := newTart(cfg, root)
@@ -160,6 +182,17 @@ func checkQEMUHost(goos, arch, guest string) error {
 	}
 	if guest != arch {
 		return fmt.Errorf("execution guest architecture %s must match host architecture %s", guest, arch)
+	}
+	return nil
+}
+
+func checkPrivateStorage(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("open configured VM storage %s (create it under the service account first): %w", path, err)
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0700 {
+		return fmt.Errorf("configured VM storage %s must be a private directory (0700)", path)
 	}
 	return nil
 }

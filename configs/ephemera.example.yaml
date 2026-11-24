@@ -28,7 +28,14 @@ vm:
   arch: amd64
   vcpus: 2
   memory_mib: 4096
-  # disk_gib: 12  # Ubuntu QEMU guest disk capacity
+  # disk_gib: 12  # Guest disk capacity in GiB; Tart inherits its image by default.
+  # host_reserve_mib: 1024
+  # host_disk_reserve_gib: 5
+  # memory_oversubscribe_mib: 0
+  # data_dir: /mnt/ephemera-vms
+  # image_cache_dir: /mnt/ephemera-cache  # QEMU only
+  # extra_retained_images: 0
+  # cache_max_gib: 0  # Soft budget for additional retention; 0 disables the size limit.
 
 # The built-in Ubuntu amd64 recipe uses pinned upstream releases.
 # To select different sources, add:

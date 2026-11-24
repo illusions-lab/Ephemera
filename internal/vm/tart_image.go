@@ -28,6 +28,9 @@ func tartImageKey(ref, version, digest, toolchain string) string {
 }
 
 func (t *Tart) preparedPath(ref, version, digest, toolchain string) string {
+	if t.diskGiB > 0 {
+		toolchain += fmt.Sprintf("\ndisk-gib-v1:%d", t.diskGiB)
+	}
 	return filepath.Join(t.home, "ephemera-prepared-"+tartImageKey(ref, version, digest, toolchain))
 }
 
@@ -59,6 +62,20 @@ func (t *Tart) checkLocalImage(ctx context.Context, name string) error {
 	var metadata map[string]json.RawMessage
 	if err := json.Unmarshal(cfg, &metadata); err != nil || len(metadata) == 0 {
 		return errors.New("prepared Tart base configuration is invalid")
+	}
+	var minimum struct {
+		CPUCountMin   int
+		MemorySizeMin uint64
+	}
+	if err := json.Unmarshal(cfg, &minimum); err != nil {
+		return fmt.Errorf("read Tart resource requirements: %w", err)
+	}
+	minimumMemoryMiB := (minimum.MemorySizeMin >> 20)
+	if minimum.MemorySizeMin&((1<<20)-1) != 0 {
+		minimumMemoryMiB++
+	}
+	if t.cpu < minimum.CPUCountMin || uint64(t.memory) < minimumMemoryMiB {
+		return fmt.Errorf("Tart image requires at least %d vCPUs and %d MiB memory", minimum.CPUCountMin, minimumMemoryMiB)
 	}
 	checkFile := func(filename string) error {
 		path := filepath.Join(directory, filename)

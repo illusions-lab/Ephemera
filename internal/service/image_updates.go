@@ -56,6 +56,9 @@ type imageUpdates struct {
 	managed            func(string) bool
 	manualSource       string
 	pruneSource        func(context.Context, string) error
+	imageBytes         func(string) (uint64, error)
+	cacheMax           uint64
+	extraRetained      int
 }
 
 func newImageUpdates(cfg config.Config, root string, selection backend.Selection, logger *slog.Logger, build backend.ImageBuilder, channelFile string, managedBaseline ...string) *imageUpdates {
@@ -66,7 +69,7 @@ func newImageUpdates(cfg config.Config, root string, selection backend.Selection
 	}
 	platform := runtime.GOOS + "/" + runtime.GOARCH
 	u := &imageUpdates{channelFile: channelFile, path: filepath.Join(root, "image-channel", "state.json"), platform: platform, logger: logger,
-		enabled: !custom && cfg.Runner.ImageAutoUpdate != nil && *cfg.Runner.ImageAutoUpdate, rebuild: selection.PrepareImage}
+		enabled: !custom && cfg.Runner.ImageAutoUpdate != nil && *cfg.Runner.ImageAutoUpdate, rebuild: selection.PrepareImage, cacheMax: uint64(cfg.VM.CacheMaxGiB) * gib, extraRetained: cfg.VM.ExtraRetainedImages}
 	if localName, ok := strings.CutPrefix(cfg.VM.ImageRef, "local:"); ok && cfg.VM.Backend == "tart" {
 		// Keep the local recipe separate from rollback records of previously used sources.
 		u.path = filepath.Join(root, "image-channel", localName+"-state.json")
@@ -74,11 +77,17 @@ func newImageUpdates(cfg config.Config, root string, selection backend.Selection
 		u.path = filepath.Join(root, "image-channel", "custom-state.json")
 	}
 	managedCache := filepath.Join(root, "image-channel", "cache")
+	if cfg.VM.ImageCacheDir != "" {
+		managedCache = filepath.Join(cfg.VM.ImageCacheDir, "channel")
+	}
 	if selection.VM != nil && cfg.VM.Backend == "tart" {
 		tart := selection.VM.(*vm.Tart)
 		u.managed = func(id string) bool { return strings.HasPrefix(id, "ephemera-base-") }
 		u.prune = tart.RemoveCachedImage
 		u.pruneSource = tart.RemoveCachedSource
+		u.imageBytes = func(id string) (uint64, error) {
+			return allocatedImageBytes(filepath.Join(tart.StoragePath(), "vms", id))
+		}
 	} else {
 		keyedDirectory := regexp.MustCompile(`^ubuntu-(amd64|arm64)-[a-f0-9]{64}(\.repair-[0-9]+)?$`)
 		u.managed = func(id string) bool {
@@ -87,6 +96,7 @@ func newImageUpdates(cfg config.Config, root string, selection backend.Selection
 			owned := cache == managedCache || !custom && slices.Contains(managedBaseline, cache)
 			return owned && filepath.Base(id) == "image.qcow2" && keyedDirectory.MatchString(filepath.Base(dir))
 		}
+		u.imageBytes = func(id string) (uint64, error) { return allocatedImageBytes(filepath.Dir(id)) }
 		u.prune = func(_ context.Context, id string) error {
 			if !u.managed(id) {
 				return errors.New("refusing to remove unmanaged image")
@@ -334,8 +344,9 @@ func (r *reconciler) pruneImages() {
 	}
 	next := u.state
 	next.Retired = nil
+	retained := u.retainExtra(u.state.Retired, r.template.Image, u.previous.id, u.baseline.id)
 	for _, id := range u.state.Retired {
-		keep := id == r.template.Image || id == u.previous.id || id == u.baseline.id
+		keep := retained[id] || id == r.template.Image || id == u.previous.id || id == u.baseline.id
 		for _, instance := range r.instances {
 			keep = keep || !instance.LocalReclaimed && instance.Image == id
 		}

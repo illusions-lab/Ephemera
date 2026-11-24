@@ -247,4 +247,8 @@ func printCapacity(w io.Writer, s runtimeStatus.Snapshot) {
 		fmt.Fprintf(w, "%-13s %d MiB available · %d MiB host reserve · %d MiB per VM\n",
 			"Host memory", *capacity.AvailableMemoryMiB, capacity.ReserveMiB, capacity.VMMemoryMiB)
 	}
+	if capacity.AvailableDiskGiB != nil {
+		fmt.Fprintf(w, "%-13s %d GiB available · %d GiB host reserve · %d GiB budget per VM\n",
+			"Host disk", *capacity.AvailableDiskGiB, capacity.DiskReserveGiB, capacity.VMDiskBudgetGiB)
+	}
 }

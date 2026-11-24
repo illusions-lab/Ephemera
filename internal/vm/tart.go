@@ -26,9 +26,10 @@ var tartName = regexp.MustCompile(`^ephemera-[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-
 type Tart struct {
 	binary, home string
 	cpu, memory  int
+	diskGiB      int
 }
 
-func NewTart(home string, cpu, memory int) (*Tart, error) {
+func NewTart(home string, cpu, memory, diskGiB int) (*Tart, error) {
 	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" || os.Geteuid() == 0 {
 		return nil, errors.New("Tart requires Apple Silicon macOS and a non-root service account")
 	}
@@ -36,7 +37,7 @@ func NewTart(home string, cpu, memory int) (*Tart, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Tart{binary: binary, home: home, cpu: cpu, memory: memory}, nil
+	return &Tart{binary: binary, home: home, cpu: cpu, memory: memory, diskGiB: diskGiB}, nil
 }
 
 func findTart() (string, error) {
@@ -228,7 +229,19 @@ func (t *Tart) Prepare(ctx context.Context, i Instance) error {
 	if err := tartDiagnostic(clone.Run(), diagnostic.output.String()); err != nil {
 		return fmt.Errorf("clone Tart image: %w", err)
 	}
-	return t.command(ctx, "set", i.Resource, "--cpu", strconv.Itoa(t.cpu), "--memory", strconv.Itoa(t.memory)).Run()
+	args := []string{"set", i.Resource, "--cpu", strconv.Itoa(t.cpu), "--memory", strconv.Itoa(t.memory)}
+	if t.diskGiB > 0 {
+		// Tart accepts decimal GB, whereas Ephemera uses binary GiB.
+		diskGB := (uint64(t.diskGiB)*(1<<30) + 999_999_999) / 1_000_000_000
+		args = append(args, "--disk-size", strconv.FormatUint(diskGB, 10))
+	}
+	set := t.command(ctx, args...)
+	diagnostic = boundedVMOutput{}
+	set.Stderr = &diagnostic
+	if err := tartDiagnostic(set.Run(), diagnostic.output.String()); err != nil {
+		return fmt.Errorf("configure Tart VM: %w", err)
+	}
+	return nil
 }
 
 func (t *Tart) Start(startup context.Context, i Instance, jit string) (Process, error) {
@@ -420,6 +433,11 @@ func (t *Tart) provision(ctx context.Context, i Instance, toolchain string) erro
 	if err := t.waitGuestAgent(ctx, i.Resource, vmExit); err != nil {
 		return err
 	}
+	if t.diskGiB > 0 {
+		if err := t.verifyGuestDisk(ctx, i.Resource); err != nil {
+			return err
+		}
+	}
 	if err := t.command(ctx, "exec", i.Resource, "/usr/bin/sudo", "-n", "/bin/sh", "-c", tartProvision, "ephemera-provision", i.RunnerVersion, i.RunnerSHA256).Run(); err != nil {
 		return err
 	}
@@ -498,3 +516,34 @@ func (t *Tart) RemoveCachedSource(ctx context.Context, ref string) error {
 	}
 	return nil
 }
+
+// verifyGuestDisk grows the main APFS container in the disposable preparation
+// clone. APFS recovery and boot partitions are preserved.
+func (t *Tart) verifyGuestDisk(ctx context.Context, resource string) error {
+	const check = `
+set -eu
+target_kib=$1
+volume=/System/Volumes/Data
+size() { /bin/df -kP "$volume" | /usr/bin/awk 'NR == 2 { print $2 }'; }
+if [ "$(size)" -lt "$target_kib" ]; then
+  container=$(/usr/sbin/diskutil info -plist "$volume" |
+    /usr/bin/plutil -extract APFSContainerReference raw -o - -)
+  /usr/sbin/diskutil apfs resizeContainer "$container" 0
+fi
+[ "$(size)" -ge "$target_kib" ]
+`
+	// Allow for boot and recovery partitions while verifying the usable volume.
+	minimumKiB := uint64(t.diskGiB) * (1 << 20) * 9 / 10
+	cmd := t.command(ctx, "exec", resource, "/usr/bin/sudo", "-n", "/bin/sh", "-c",
+		check, "ephemera-resize", strconv.FormatUint(minimumKiB, 10))
+	var diagnostic boundedVMOutput
+	cmd.Stdout, cmd.Stderr = &diagnostic, &diagnostic
+	err := cmd.Run()
+	if err := tartDiagnostic(err, diagnostic.output.String()); err != nil {
+		return fmt.Errorf("verify the %d GiB Tart guest disk: %w; use a compatible pre-sized image if APFS cannot expand", t.diskGiB, err)
+	}
+	return nil
+}
+
+// StoragePath identifies Tart’s private home directory.
+func (t *Tart) StoragePath() string { return t.home }

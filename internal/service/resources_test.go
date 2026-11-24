@@ -109,3 +109,26 @@ func TestDeregistrationBacklogDoesNotRetainLocallyReclaimedCapacity(t *testing.T
 	fake.busy.Store(false)
 	waitView(t, updates, func(view executionView) bool { return view.counts.PendingDeregistration == 0 })
 }
+
+func TestMemoryOversubscriptionRespectsPressureAndDiskReserve(t *testing.T) {
+	normal := true
+	disk := 60 * gib
+	budget := &resourceBudget{
+		memory: 4 * gib, memoryReserve: gib, memoryCredit: 3 * gib,
+		disk: 20 * gib, diskReserve: 20 * gib,
+		sample:         func(context.Context, string) (uint64, uint64, error) { return 6 * gib, disk, nil },
+		pressureNormal: func(context.Context) bool { return normal },
+	}
+	now := time.Now()
+	if slots, reason := budget.slots(t.Context(), now, 0, 2); slots != 2 || reason != "" {
+		t.Fatalf("normal pressure: %d slots (%s)", slots, reason)
+	}
+	disk--
+	if slots, reason := budget.slots(t.Context(), now.Add(time.Second), 0, 2); slots != 1 || !strings.Contains(reason, "20 GiB") {
+		t.Fatalf("disk reserve: %d slots (%s)", slots, reason)
+	}
+	normal = false
+	if slots, reason := budget.slots(t.Context(), now.Add(2*time.Second), 0, 2); slots != 0 || !strings.Contains(reason, "pressure") {
+		t.Fatalf("elevated pressure: %d slots (%s)", slots, reason)
+	}
+}

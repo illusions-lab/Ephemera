@@ -58,6 +58,9 @@ type Capacity struct {
 	AvailableMemoryMiB *uint64 `json:"available_memory_mib,omitempty"`
 	ReserveMiB         uint64  `json:"reserve_mib"`
 	VMMemoryMiB        uint64  `json:"vm_memory_mib"`
+	AvailableDiskGiB   *uint64 `json:"available_disk_gib,omitempty"`
+	DiskReserveGiB     uint64  `json:"disk_reserve_gib,omitempty"`
+	VMDiskBudgetGiB    uint64  `json:"vm_disk_budget_gib,omitempty"`
 }
 
 type Instances struct {

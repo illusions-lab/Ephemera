@@ -190,7 +190,14 @@ func prepareMacActivation(ctx context.Context, release string, automatic, resume
 	if cfg.Runner.Execute {
 		intake = "executing"
 	}
-	return &macos.Candidate{Config: data, Key: key, ReplaceEditable: !resume && automatic, Scope: cfg.GitHub.ScopeURL, ScaleSet: cfg.GitHub.ScaleSetName, Intake: intake}, nil
+	activePath, err := macos.ActiveConfigPath(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &macos.Candidate{Config: data, Key: key, ReplaceEditable: !resume && automatic,
+		Scope: cfg.GitHub.ScopeURL, ScaleSet: cfg.GitHub.ScaleSetName, Intake: intake,
+		BeforeSwitch: func() error { return checkConfigRecovery(cfg, activePath) },
+	}, nil
 }
 
 func probeMacSetup(ctx context.Context, cfg config.Config, key []byte) error {

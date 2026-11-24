@@ -33,16 +33,16 @@ func TestManualTartImageRetentionKeepsRollbackAndRunningImages(t *testing.T) {
 			"runner": {Instance: vm.Instance{Image: first.Prepared}},
 		},
 	}
-	got, err := r.removeRetiredTartImage(ledger, first)
+	got, err := r.removeRetiredTartImage(ledger, first, false)
 	if err != nil || got || len(removed) != 0 {
 		t.Fatalf("pruned image that was still in use: %v, %v, %v", got, err, removed)
 	}
 	r.instances["runner"].LocalReclaimed = true
-	got, err = r.removeRetiredTartImage(ledger, first)
+	got, err = r.removeRetiredTartImage(ledger, first, false)
 	if err != nil || !got || !reflect.DeepEqual(removed, []string{"first", "source-a"}) {
 		t.Fatalf("retired image cleanup = %v, %v, %v", got, err, removed)
 	}
-	got, err = r.removeRetiredTartImage(ledger, tartImageUse{Source: "source-b", Prepared: "older"})
+	got, err = r.removeRetiredTartImage(ledger, tartImageUse{Source: "source-b", Prepared: "older"}, false)
 	if err != nil || !got || !reflect.DeepEqual(removed, []string{"first", "source-a", "older"}) {
 		t.Fatalf("shared source cleanup = %v, %v, %v", got, err, removed)
 	}

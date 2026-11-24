@@ -158,11 +158,15 @@ func writeFirstSetup(path string, cfg config.Config, key []byte, validate func(c
 	resources := fmt.Sprintf("%d CPUs · %d MiB per VM", cfg.VM.VCPUs, cfg.VM.MemoryMiB)
 	if cfg.VM.Backend == "qemu" {
 		resources += fmt.Sprintf(" · %d GiB guest disk", max(12, cfg.VM.DiskGiB))
+	} else if cfg.VM.DiskGiB > 0 {
+		resources += fmt.Sprintf(" · %d GiB guest disk", cfg.VM.DiskGiB)
+	} else {
+		resources += " · guest disk inherited from image"
 	}
 	summary := fmt.Sprintf("%s · %s\nRunner group %s\nLabels: %s\n%s · up to %d runners\n%s\n%s",
 		cfg.GitHub.ScopeURL, cfg.GitHub.ScaleSetName, cfg.RunnerGroup(),
 		strings.Join(append([]string{cfg.GitHub.ScaleSetName}, cfg.ScaleSetLabels()...), ", "), mode, cfg.Runner.MaxConcurrent, machine, resources)
-	ok, err := confirmSetup("Save this configuration?", summary)
+	ok, err := confirmSetup("Save this configuration?", summary+"\n"+CapacityPreview(cfg))
 	if err != nil || !ok {
 		return false, err
 	}

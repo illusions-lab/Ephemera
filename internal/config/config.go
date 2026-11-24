@@ -55,16 +55,22 @@ type Config struct {
 		IdleTimeout     time.Duration `yaml:"idle_timeout"`
 	}
 	VM struct {
-		Backend        string
-		Image          string
-		Arch           string `yaml:"arch,omitempty"`
-		ImageRef       string `yaml:"image_ref,omitempty"`
-		Profile        string `yaml:"profile,omitempty"`
-		VCPUs          int
-		MemoryMiB      int    `yaml:"memory_mib"`
-		DiskGiB        int    `yaml:"disk_gib,omitempty"`
-		AppleToolchain string `yaml:"apple_toolchain,omitempty"`
-		HostReserveMiB int    `yaml:"host_reserve_mib,omitempty"`
+		Backend                string
+		Image                  string
+		Arch                   string `yaml:"arch,omitempty"`
+		ImageRef               string `yaml:"image_ref,omitempty"`
+		Profile                string `yaml:"profile,omitempty"`
+		VCPUs                  int
+		MemoryMiB              int    `yaml:"memory_mib"`
+		DiskGiB                int    `yaml:"disk_gib,omitempty"`
+		AppleToolchain         string `yaml:"apple_toolchain,omitempty"`
+		HostReserveMiB         int    `yaml:"host_reserve_mib,omitempty"`
+		HostDiskReserveGiB     int    `yaml:"host_disk_reserve_gib,omitempty"`
+		CacheMaxGiB            int    `yaml:"cache_max_gib,omitempty"`
+		ExtraRetainedImages    int    `yaml:"extra_retained_images,omitempty"`
+		DataDir                string `yaml:"data_dir,omitempty"`
+		ImageCacheDir          string `yaml:"image_cache_dir,omitempty"`
+		MemoryOversubscribeMiB int    `yaml:"memory_oversubscribe_mib,omitempty"`
 	}
 	ImageSources map[string]map[string]image.Source `yaml:"image,omitempty"`
 }
@@ -172,8 +178,20 @@ func (cfg Config) Validate() error {
 		return errors.New("vm.apple_toolchain must be macos or ios and requires Tart")
 	case cfg.VM.HostReserveMiB != 0 && (cfg.VM.HostReserveMiB < 256 || cfg.VM.HostReserveMiB > math.MaxInt32):
 		return errors.New("vm.host_reserve_mib must be 0 (default) or between 256 and 2147483647")
-	case cfg.VM.DiskGiB != 0 && (cfg.VM.Backend != "qemu" || cfg.VM.DiskGiB < 12 || cfg.VM.DiskGiB > 1024):
-		return errors.New("vm.disk_gib must be between 12 and 1024 and requires QEMU")
+	case cfg.VM.CacheMaxGiB < 0 || cfg.VM.CacheMaxGiB > math.MaxInt32:
+		return errors.New("vm.cache_max_gib must be between 0 (unlimited) and 2147483647")
+	case cfg.VM.ExtraRetainedImages < 0 || cfg.VM.ExtraRetainedImages > 100:
+		return errors.New("vm.extra_retained_images must be between 0 and 100")
+	case cfg.VM.DataDir != "" && (!filepath.IsAbs(cfg.VM.DataDir) || filepath.Clean(cfg.VM.DataDir) != cfg.VM.DataDir || cfg.VM.DataDir == "/"):
+		return errors.New("vm.data_dir must be a clean absolute path to a private filesystem directory")
+	case cfg.VM.ImageCacheDir != "" && (cfg.VM.Backend != "qemu" || !filepath.IsAbs(cfg.VM.ImageCacheDir) || filepath.Clean(cfg.VM.ImageCacheDir) != cfg.VM.ImageCacheDir || cfg.VM.ImageCacheDir == "/"):
+		return errors.New("vm.image_cache_dir requires QEMU and a clean absolute path; Tart keeps its cache under vm.data_dir")
+	case cfg.VM.MemoryOversubscribeMiB < 0 || cfg.VM.MemoryOversubscribeMiB > 4096:
+		return errors.New("vm.memory_oversubscribe_mib must be between 0 and 4096")
+	case cfg.VM.HostDiskReserveGiB < 0 || cfg.VM.HostDiskReserveGiB > math.MaxInt32:
+		return errors.New("vm.host_disk_reserve_gib must be between 0 (default) and 2147483647")
+	case cfg.VM.DiskGiB != 0 && (cfg.VM.DiskGiB < 12 || cfg.VM.DiskGiB > 1024):
+		return errors.New("vm.disk_gib must be 0 (default) or between 12 and 1024")
 	case strings.TrimSpace(cfg.VM.Image) == "" || cfg.VM.VCPUs <= 0 || cfg.VM.MemoryMiB <= 0:
 		return errors.New("vm.image is required and vm.vcpus and vm.memory_mib must be positive")
 	}
@@ -344,4 +362,24 @@ func (cfg Config) ImageConfig() (image.Config, error) {
 	return image.Config{
 		Platform: platform, Source: source, VCPUs: cfg.VM.VCPUs, MemoryMiB: cfg.VM.MemoryMiB, DiskGiB: cfg.VM.DiskGiB,
 	}, nil
+}
+
+// VMDataPath returns the backend's resource directory. Recovery records and
+// daemon sockets remain in the original state directory.
+func (cfg Config) VMDataPath(root string) string {
+	if cfg.VM.DataDir != "" {
+		return cfg.VM.DataDir
+	}
+	if cfg.VM.Backend == "tart" {
+		return filepath.Join(root, "tart")
+	}
+	return root
+}
+
+// VMImageCachePath returns the QEMU baseline cache directory.
+func (cfg Config) VMImageCachePath(cache string) string {
+	if cfg.VM.ImageCacheDir != "" {
+		return cfg.VM.ImageCacheDir
+	}
+	return cache
 }

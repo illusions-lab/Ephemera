@@ -105,7 +105,7 @@ func TestTartGuestSmoke(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Minute)
 	defer cancel()
-	backend, err := NewTart(home, 2, 4096)
+	backend, err := NewTart(home, 2, 4096, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestTartCandidateSmoke(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Minute)
 	defer cancel()
-	tart, err := NewTart(home, 2, 4096)
+	tart, err := NewTart(home, 2, 4096, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,5 +310,31 @@ func TestAppleTartImageReceipt(t *testing.T) {
 	}
 	if err := backend.checkLocalImageReceipt(name); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTartPrepareAppliesDiskSizeToClone(t *testing.T) {
+	home := t.TempDir()
+	binary := home + "/tart"
+	const fixture = `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$TART_HOME/commands"
+`
+	if err := os.WriteFile(binary, []byte(fixture), 0700); err != nil {
+		t.Fatal(err)
+	}
+	tart := &Tart{binary: binary, home: home, cpu: 2, memory: 4096, diskGiB: 64}
+	id := uuid.NewString()
+	instance := Instance{ID: id, Backend: "tart", Namespace: home, Resource: "ephemera-" + id, Image: "local:source"}
+	if err := tart.Prepare(t.Context(), instance); err != nil {
+		t.Fatal(err)
+	}
+	commands, err := os.ReadFile(home + "/commands")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("clone source %s\nset %s --cpu 2 --memory 4096 --disk-size 69\n", instance.Resource, instance.Resource)
+	if string(commands) != want {
+		t.Fatalf("got %q, want %q", commands, want)
 	}
 }
