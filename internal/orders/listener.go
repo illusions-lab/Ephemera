@@ -463,12 +463,15 @@ func pollTracked(ctx context.Context, s session, limit int, claim bool, checkIma
 			occupied := max(stats.TotalAssignedJobs, stats.TotalAcquiredJobs)
 			capacity = min(limit, occupied+len(pending)+available())
 		}
-		msg, err := s.GetMessage(ctx, lastMessageID, capacity)
-		if err != nil {
+		msg, err := receiveMessage(ctx, s, lastMessageID, capacity, local != nil, 15*time.Second)
+		if err != nil && !errors.Is(err, errCapacityRepoll) {
 			return fmt.Errorf("poll Scale Set: %w", err)
 		}
 		if local != nil && s.Session().Statistics != initialSession.Statistics {
 			return errors.New("Scale Set session refreshed during polling")
+		}
+		if err != nil {
+			continue
 		}
 		if polled != nil {
 			polled()
@@ -583,6 +586,23 @@ func pollTracked(ctx context.Context, s session, limit int, claim bool, checkIma
 		lastMessageID = max(lastMessageID, msg.MessageID)
 	}
 	return ctx.Err()
+}
+
+var errCapacityRepoll = errors.New("refresh zero-capacity Scale Set poll")
+
+func receiveMessage(ctx context.Context, s session, cursor, capacity int, dynamic bool, repollAfter time.Duration) (*scaleset.RunnerScaleSetMessage, error) {
+	if !dynamic || capacity != 0 {
+		return s.GetMessage(ctx, cursor, capacity)
+	}
+	// A zero-capacity request cannot be updated in flight. Let the next
+	// request advertise a recovered slot even if the queue has no messages.
+	pollCtx, cancel := context.WithTimeoutCause(ctx, repollAfter, errCapacityRepoll)
+	defer cancel()
+	message, err := s.GetMessage(pollCtx, cursor, capacity)
+	if errors.Is(err, context.DeadlineExceeded) && context.Cause(pollCtx) == errCapacityRepoll {
+		return nil, errCapacityRepoll
+	}
+	return message, err
 }
 
 func demand(stats *scaleset.RunnerScaleSetStatistic, limit int) Update {

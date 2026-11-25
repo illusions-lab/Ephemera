@@ -111,8 +111,11 @@ A remote host agent can use the same lifecycle contract in a later release.
 
 1. Verify the selected base image, backend availability, and local capacity.
    Recover resources from previous daemon runs before opening capacity to
-   GitHub. Advertise locally available capacity within
-   `runner.max_concurrent`.
+   GitHub. Advertise locally available capacity based on disk space and
+   `runner.max_concurrent`. Memory allocation is handled by the VM backend and
+   host OS. An execution listener bounds a zero-capacity
+   long poll to 15 seconds so a recovered local slot can be advertised
+   without waiting for a job message or a new Scale Set session.
 2. Acquire eligible job offers within that capacity where the Scale Set
    protocol requires it. Bound acquisitions using GitHub's current occupied
    counts and any acquisitions still awaiting confirmation from newer

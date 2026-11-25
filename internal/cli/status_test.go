@@ -184,7 +184,7 @@ func TestCapacityDistinguishesMemoryShortageFromConfiguredConcurrency(t *testing
 			t.Fatalf("missing %q from %s", expected, &output)
 		}
 	}
-	if err := reportDoctorCapacity(cfg, current, "applied", 4096, &output); err == nil || !strings.Contains(err.Error(), "requires 4480 MiB") {
+	if err := reportDoctorCapacity(cfg, current, "applied", 4095, &output); err == nil || !strings.Contains(err.Error(), "requires 4096 MiB") {
 		t.Fatalf("expected a physical capacity error, got %v", err)
 	}
 }

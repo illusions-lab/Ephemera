@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/actions/scaleset"
 )
@@ -101,6 +103,45 @@ func TestPollObservationDoesNotClaimOrAckOnHandlerError(t *testing.T) {
 	})
 	if !errors.Is(err, failure) || s.pollCap != 0 || !reflect.DeepEqual(s.calls, []string{"poll"}) {
 		t.Fatalf("err = %v, capacity = %d, calls = %v", err, s.pollCap, s.calls)
+	}
+}
+
+type capacityPollSession struct {
+	fakeSession
+	get func(context.Context, int, int) (*scaleset.RunnerScaleSetMessage, error)
+}
+
+func (s capacityPollSession) GetMessage(ctx context.Context, cursor, capacity int) (*scaleset.RunnerScaleSetMessage, error) {
+	return s.get(ctx, cursor, capacity)
+}
+
+func TestZeroCapacityPollCanRetryWithoutLosingMessageCursor(t *testing.T) {
+	message := &scaleset.RunnerScaleSetMessage{MessageID: 42}
+	s := &capacityPollSession{
+		get: func(ctx context.Context, cursor, capacity int) (*scaleset.RunnerScaleSetMessage, error) {
+			if cursor != 41 {
+				t.Fatalf("poll cursor = %d, want 41", cursor)
+			}
+			if capacity == 0 {
+				<-ctx.Done()
+				return nil, fmt.Errorf("wrapped transport error: %w", ctx.Err())
+			}
+			if _, ok := ctx.Deadline(); ok {
+				t.Fatal("positive capacity used the zero-capacity deadline")
+			}
+			return message, nil
+		},
+	}
+	if got, err := receiveMessage(t.Context(), s, 41, 0, true, time.Millisecond); got != nil || !errors.Is(err, errCapacityRepoll) {
+		t.Fatalf("zero-capacity poll = %v, %v", got, err)
+	}
+	if got, err := receiveMessage(t.Context(), s, 41, 1, true, time.Millisecond); got != message || err != nil {
+		t.Fatalf("recovered capacity poll = %v, %v", got, err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := receiveMessage(ctx, s, 41, 0, true, time.Millisecond); !errors.Is(err, context.Canceled) {
+		t.Fatalf("shutdown must stop polling, got %v", err)
 	}
 }
 

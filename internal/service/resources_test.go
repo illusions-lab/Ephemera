@@ -1,7 +1,6 @@
 package service
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -12,32 +11,30 @@ import (
 	"github.com/illusions-lab/Ephemera/internal/vm"
 )
 
-func TestResourceBudgetReservesHostAndStartingCapacity(t *testing.T) {
-	var memory, disk uint64
+func TestResourceBudgetReservesDiskAndPendingStarts(t *testing.T) {
+	var disk uint64
 	var sampleErr error
-	budget := &resourceBudget{memory: 4 * gib, disk: 20 * gib, sample: func(context.Context, string) (uint64, uint64, error) {
-		return memory, disk, sampleErr
+	budget := &resourceBudget{disk: 20 * gib, sample: func(string) (uint64, error) {
+		return disk, sampleErr
 	}}
 	now := time.Now()
 	for _, tc := range []struct {
 		name                  string
-		memory, disk          uint64
+		disk                  uint64
 		starting, limit, want int
 		reason                string
 		err                   error
 	}{
-		{name: "insufficient memory", memory: 5*gib - 1, disk: 25 * gib, limit: 2, reason: "memory"},
-		{name: "insufficient disk", memory: 5 * gib, disk: 25*gib - 1, limit: 2, reason: "disk"},
-		{name: "boundary admits one", memory: 5 * gib, disk: 25 * gib, limit: 2, want: 1, reason: "memory"},
-		{name: "starting VM owns that slot", memory: 5 * gib, disk: 25 * gib, starting: 1, limit: 2, reason: "memory"},
-		{name: "parallel starts reserve configured disk", memory: 17 * gib, disk: 45 * gib, starting: 1, limit: 2, want: 1, reason: "disk"},
-		{name: "resource sampling failure", memory: 17 * gib, disk: 45 * gib, limit: 2, reason: "measurement failed", err: errors.New("measurement failed")},
-		{name: "resources recover with concurrency cap", memory: 17 * gib, disk: 65 * gib, limit: 2, want: 2},
+		{name: "insufficient disk", disk: 25*gib - 1, limit: 2, reason: "disk"},
+		{name: "one runner is admitted with enough disk", disk: 25 * gib, limit: 1, want: 1},
+		{name: "pending start holds its slot", disk: 25 * gib, starting: 1, limit: 1, reason: "disk"},
+		{name: "disk measurement failure", disk: 65 * gib, limit: 2, reason: "measurement failed", err: errors.New("measurement failed")},
+		{name: "recovery respects concurrency limit", disk: 65 * gib, limit: 2, want: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			now = now.Add(time.Second)
-			memory, disk, sampleErr = tc.memory, tc.disk, tc.err
-			got, why := budget.slots(t.Context(), now, tc.starting, tc.limit)
+			disk, sampleErr = tc.disk, tc.err
+			got, why := budget.slots(now, tc.starting, tc.limit)
 			if got != tc.want || (tc.reason == "" && why != "") || (tc.reason != "" && !strings.Contains(why, tc.reason)) {
 				t.Fatalf("slots = %d (%q), want %d (%q)", got, why, tc.want, tc.reason)
 			}
@@ -45,28 +42,12 @@ func TestResourceBudgetReservesHostAndStartingCapacity(t *testing.T) {
 	}
 }
 
-func TestResourceBudgetUsesConfiguredHostReserve(t *testing.T) {
-	budget := &resourceBudget{
-		memory: 4 * gib, disk: 20 * gib, memoryReserve: 384 << 20,
-		sample: func(context.Context, string) (uint64, uint64, error) {
-			return 4*gib + 400<<20, 25 * gib, nil
-		},
-	}
-	now := time.Now()
-	if slots, reason := budget.slots(t.Context(), now, 0, 1); slots != 1 || reason != "" {
-		t.Fatalf("expected one VM slot, got %d (%s)", slots, reason)
-	}
-	if slots, reason := budget.slots(t.Context(), now, 1, 1); slots != 0 || !strings.Contains(reason, "384 MiB") {
-		t.Fatalf("expected pending VM to occupy the only slot, got %d (%s)", slots, reason)
-	}
-}
-
 func TestResourceExhaustionLeavesReadyRunnerEligible(t *testing.T) {
 	now := time.Now()
 	r := &reconciler{
 		connected: true, limit: 2, update: orders.Update{TargetRunners: 2},
-		budget: &resourceBudget{memory: 4 * gib, disk: 12 * gib, sample: func(context.Context, string) (uint64, uint64, error) {
-			return 5 * gib, 5 * gib, nil
+		budget: &resourceBudget{disk: 12 * gib, sample: func(string) (uint64, error) {
+			return 5 * gib, nil
 		}},
 		instances: map[string]*instanceState{
 			"id": {Instance: vm.Instance{ID: "id"}, phase: waiting, deadline: now.Add(time.Hour)},
@@ -108,27 +89,4 @@ func TestDeregistrationBacklogDoesNotRetainLocallyReclaimedCapacity(t *testing.T
 	}
 	fake.busy.Store(false)
 	waitView(t, updates, func(view executionView) bool { return view.counts.PendingDeregistration == 0 })
-}
-
-func TestMemoryOversubscriptionRespectsPressureAndDiskReserve(t *testing.T) {
-	normal := true
-	disk := 60 * gib
-	budget := &resourceBudget{
-		memory: 4 * gib, memoryReserve: gib, memoryCredit: 3 * gib,
-		disk: 20 * gib, diskReserve: 20 * gib,
-		sample:         func(context.Context, string) (uint64, uint64, error) { return 6 * gib, disk, nil },
-		pressureNormal: func(context.Context) bool { return normal },
-	}
-	now := time.Now()
-	if slots, reason := budget.slots(t.Context(), now, 0, 2); slots != 2 || reason != "" {
-		t.Fatalf("normal pressure: %d slots (%s)", slots, reason)
-	}
-	disk--
-	if slots, reason := budget.slots(t.Context(), now.Add(time.Second), 0, 2); slots != 1 || !strings.Contains(reason, "20 GiB") {
-		t.Fatalf("disk reserve: %d slots (%s)", slots, reason)
-	}
-	normal = false
-	if slots, reason := budget.slots(t.Context(), now.Add(2*time.Second), 0, 2); slots != 0 || !strings.Contains(reason, "pressure") {
-		t.Fatalf("elevated pressure: %d slots (%s)", slots, reason)
-	}
 }

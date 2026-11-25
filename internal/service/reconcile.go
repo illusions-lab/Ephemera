@@ -406,7 +406,7 @@ func (r *reconciler) reconcile(ctx context.Context, now time.Time) (int, status.
 				startingCount++
 			}
 		}
-		slots, reason := r.budget.slots(ctx, now, startingCount, max(0, r.limit-local))
+		slots, reason := r.budget.slots(now, startingCount, max(0, r.limit-local))
 		capacityReason = reason
 		if prune && r.images.pruneOnPressure && slots == 0 && r.budget != nil &&
 			reason == r.budget.diskCapacityReason() && !now.Before(r.retryStart) &&

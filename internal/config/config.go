@@ -64,14 +64,14 @@ type Config struct {
 		MemoryMiB              int    `yaml:"memory_mib"`
 		DiskGiB                int    `yaml:"disk_gib,omitempty"`
 		AppleToolchain         string `yaml:"apple_toolchain,omitempty"`
-		HostReserveMiB         int    `yaml:"host_reserve_mib,omitempty"`
+		HostReserveMiB         int    `yaml:"host_reserve_mib,omitempty"` // Kept for saved configuration compatibility.
 		HostDiskReserveGiB     int    `yaml:"host_disk_reserve_gib,omitempty"`
 		CacheMaxGiB            int    `yaml:"cache_max_gib,omitempty"`
 		PruneOnDiskPressure    bool   `yaml:"prune_on_disk_pressure,omitempty"`
 		ExtraRetainedImages    int    `yaml:"extra_retained_images,omitempty"`
 		DataDir                string `yaml:"data_dir,omitempty"`
 		ImageCacheDir          string `yaml:"image_cache_dir,omitempty"`
-		MemoryOversubscribeMiB int    `yaml:"memory_oversubscribe_mib,omitempty"`
+		MemoryOversubscribeMiB int    `yaml:"memory_oversubscribe_mib,omitempty"` // Kept for saved configuration compatibility.
 	}
 	ImageSources map[string]map[string]image.Source `yaml:"image,omitempty"`
 }
@@ -177,8 +177,6 @@ func (cfg Config) Validate() error {
 		return errors.New("an Apple host-Xcode image requires vm.apple_toolchain macos or ios")
 	case cfg.VM.AppleToolchain != "" && (cfg.VM.Backend != "tart" || (cfg.VM.AppleToolchain != "macos" && cfg.VM.AppleToolchain != "ios")):
 		return errors.New("vm.apple_toolchain must be macos or ios and requires Tart")
-	case cfg.VM.HostReserveMiB != 0 && (cfg.VM.HostReserveMiB < 256 || cfg.VM.HostReserveMiB > math.MaxInt32):
-		return errors.New("vm.host_reserve_mib must be 0 (default) or between 256 and 2147483647")
 	case cfg.VM.CacheMaxGiB < 0 || cfg.VM.CacheMaxGiB > math.MaxInt32:
 		return errors.New("vm.cache_max_gib must be between 0 (unlimited) and 2147483647")
 	case cfg.VM.ExtraRetainedImages < 0 || cfg.VM.ExtraRetainedImages > 100:
@@ -187,8 +185,6 @@ func (cfg Config) Validate() error {
 		return errors.New("vm.data_dir must be a clean absolute path to a private filesystem directory")
 	case cfg.VM.ImageCacheDir != "" && (cfg.VM.Backend != "qemu" || !filepath.IsAbs(cfg.VM.ImageCacheDir) || filepath.Clean(cfg.VM.ImageCacheDir) != cfg.VM.ImageCacheDir || cfg.VM.ImageCacheDir == "/"):
 		return errors.New("vm.image_cache_dir requires QEMU and a clean absolute path; Tart keeps its cache under vm.data_dir")
-	case cfg.VM.MemoryOversubscribeMiB < 0 || cfg.VM.MemoryOversubscribeMiB > 4096:
-		return errors.New("vm.memory_oversubscribe_mib must be between 0 and 4096")
 	case cfg.VM.HostDiskReserveGiB < 0 || cfg.VM.HostDiskReserveGiB > math.MaxInt32:
 		return errors.New("vm.host_disk_reserve_gib must be between 0 (default) and 2147483647")
 	case cfg.VM.DiskGiB != 0 && (cfg.VM.DiskGiB < 12 || cfg.VM.DiskGiB > 1024):

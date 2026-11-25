@@ -114,16 +114,15 @@ func TestDiskPressureProtectsTartRollbackWithoutVerifiedSource(t *testing.T) {
 
 func TestReconcileReclaimsDiskOnlyWhenQueuedWorkCanBenefit(t *testing.T) {
 	for _, tc := range []struct {
-		name                             string
-		optIn                            bool
-		available, assigned, memorySlots int
-		reclaim                          bool
+		name                string
+		optIn               bool
+		available, assigned int
+		reclaim             bool
 	}{
-		{name: "available jobs", optIn: true, available: 1, memorySlots: 1, reclaim: true},
-		{name: "assigned jobs", optIn: true, assigned: 1, memorySlots: 1, reclaim: true},
-		{name: "idle host", optIn: true, memorySlots: 1},
-		{name: "opted out", available: 1, memorySlots: 1},
-		{name: "insufficient memory", optIn: true, available: 1},
+		{name: "available jobs", optIn: true, available: 1, reclaim: true},
+		{name: "assigned jobs", optIn: true, assigned: 1, reclaim: true},
+		{name: "idle host", optIn: true},
+		{name: "opted out", available: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -136,10 +135,7 @@ func TestReconcileReclaimsDiskOnlyWhenQueuedWorkCanBenefit(t *testing.T) {
 			r := &reconciler{connected: true, limit: 1, logger: logger,
 				template: vm.Instance{Image: "active"},
 				update:   orders.Update{AvailableJobs: tc.available, TargetRunners: tc.assigned},
-				budget: &resourceBudget{root: root, memory: gib, disk: free + gib,
-					sample: func(context.Context, string) (uint64, uint64, error) {
-						return uint64(tc.memorySlots+1) * gib, free, nil
-					}},
+				budget:   &resourceBudget{root: root, disk: free + gib, sample: availableDiskBytes},
 				images: &imageUpdates{path: filepath.Join(root, "state.json"), logger: logger,
 					state: updateState{Retired: []string{"old"}}, extraRetained: 1, pruneOnPressure: tc.optIn,
 					imagePath: func(string) string { return root },

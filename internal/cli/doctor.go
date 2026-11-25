@@ -306,13 +306,8 @@ func diagnoseCapacity(ctx context.Context, cfg config.Config, current status.Sna
 }
 
 func reportDoctorCapacity(cfg config.Config, current status.Snapshot, digest string, total uint64, output io.Writer) error {
-	reserve := cfg.VM.HostReserveMiB
-	if reserve == 0 {
-		reserve = 1024
-	}
-	required := uint64(cfg.VM.MemoryMiB) + uint64(reserve)
-	if required > total {
-		return fmt.Errorf("VM memory plus host reserve requires %d MiB but this host has %d MiB; review VM memory and host reserve in ephe config", required, total)
+	if uint64(cfg.VM.MemoryMiB) > total {
+		return fmt.Errorf("VM memory requires %d MiB but this host has %d MiB; review VM memory in ephe config", cfg.VM.MemoryMiB, total)
 	}
 	if current.ConfigDigest == digest && current.Instances != nil && current.Instances.Capacity != nil {
 		printCapacity(output, current)

@@ -46,7 +46,7 @@ func execute(ctx context.Context, cfg config.Config, github orders.Config, names
 	if github.Owner != "" {
 		disk := uint64(max(12, cfg.VM.DiskGiB)) * gib
 		root := cfg.VMDataPath(string(store))
-		r.budget = &resourceBudget{root: root, memory: uint64(cfg.VM.MemoryMiB) << 20, disk: disk, memoryReserve: uint64(cfg.VM.HostReserveMiB) << 20, diskReserve: uint64(cfg.VM.HostDiskReserveGiB) * gib, memoryCredit: uint64(cfg.VM.MemoryOversubscribeMiB) << 20, sample: sampleResources, pressureNormal: normalHostMemoryPressure}
+		r.budget = &resourceBudget{root: root, disk: disk, diskReserve: uint64(cfg.VM.HostDiskReserveGiB) * gib, sample: availableDiskBytes}
 		closeControl, err := control.Listen(listenCtx, string(store), r.serveDrain)
 		if err != nil {
 			return err

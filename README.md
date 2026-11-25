@@ -81,23 +81,20 @@ and the guest OS and architecture labels. Set your workflow's `runs-on` to
 the Scale Set name shown by `ephe status` to target that specific set.
 If `github.labels` is absent, Ephemera preserves existing extra labels.
 If it is present, it defines the extra labels, and an empty list removes them.
-The scheduler reserves 1024 MiB of available host memory by default. To adjust
-that threshold, set `vm.host_reserve_mib` in **VM and images** under `ephe config`,
-then run `ephe config apply`. The minimum is 256 MiB. Reduce the reserve only
-if the host can run the configured VM and its workloads with that headroom.
 
 ### VM resources and storage
 
 The setup wizard and **VM and images** in `ephe config` show an estimated runner
-capacity before saving. The estimate uses the host's total memory and current
-disk space. After apply, `ephe status` shows runtime capacity and the limiting
-resource, including reservations for VMs that are starting.
+capacity before saving. Runner admission uses the configured concurrency and
+current disk space, including reservations for VMs that are starting. The
+operating system and VM backend manage memory. Guest memory remains configured
+by `vm.memory_mib`. Existing `vm.host_reserve_mib` and
+`vm.memory_oversubscribe_mib` entries are accepted for compatibility.
 
 | Setting | Behavior |
 | --- | --- |
 | `vm.disk_gib` | QEMU defaults to 12 GiB. Tart defaults to the image size. An explicit Tart size grows a disposable preparation clone, verifies the APFS data volume, and leaves the source image intact. Use a compatible pre-sized image if APFS cannot grow with its existing recovery layout. |
 | `vm.host_disk_reserve_gib` | Disk space kept free on the VM data filesystem. The default is 5 GiB. |
-| `vm.memory_oversubscribe_mib` | Optional extra memory admission budget, disabled by default. With it enabled, new launches pause when the host reports elevated pressure or pressure cannot be read. Guest minimum memory and vCPU requirements still apply. |
 | `vm.data_dir` | Absolute path for VM resources. Tart keeps its local images and cache in this directory as well. On QEMU, recovery records stay in the standard state directory. |
 | `vm.image_cache_dir` | Separate absolute path for the QEMU image cache. |
 | `vm.extra_retained_images` | Number of additional retired images to keep beyond the active and rollback images. Defaults to zero. |
@@ -120,7 +117,7 @@ from GitHub. If GitHub still omits a label after reapplying, choose a new Scale
 Set name in `ephe config` and apply it. The old Scale Set stays registered.
 
 `ephe status` shows how many additional VMs can start now, the configured
-runner limit, and the available host memory, host reserve, and memory per VM.
+runner limit and VM storage budget.
 `ephe doctor` distinguishes a temporary capacity limit from a VM configuration
 that exceeds the host's total memory.
 

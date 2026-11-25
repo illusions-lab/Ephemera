@@ -29,9 +29,7 @@ vm:
   vcpus: 2
   memory_mib: 4096
   # disk_gib: 12  # Guest disk capacity in GiB; Tart inherits its image by default.
-  # host_reserve_mib: 1024
   # host_disk_reserve_gib: 5
-  # memory_oversubscribe_mib: 0
   # data_dir: /mnt/ephemera-vms
   # image_cache_dir: /mnt/ephemera-cache  # QEMU only
   # prune_on_disk_pressure: true  # Allow reclaiming recoverable old images to start queued jobs.
